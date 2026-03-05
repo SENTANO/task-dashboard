@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Task Dashboard</title>
+<script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Syne:wght@700;800&display=swap" rel="stylesheet">
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:#0d0d12;font-family:'DM Sans',sans-serif}
+  ::-webkit-scrollbar{width:4px}
+  ::-webkit-scrollbar-thumb{background:rgba(255,255,255,.1);border-radius:2px}
+  input::placeholder{color:rgba(255,255,255,.22)}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  @keyframes fadeUp{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:translateY(0)}}
+  @keyframes pulse{0%,100%{opacity:.4}50%{opacity:1}}
+  @keyframes blink{0%,100%{opacity:1}50%{opacity:.3}}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useCallback, useEffect, useRef } = React;
+
+const ANTHROPIC_PROXY = "https://api.anthropic.com/v1/messages";
+const SERVER = "https://web-production-7b224.up.railway.app";
+const POLL_INTERVAL = 5000;
+
+function priorityColor(p){if(p==="high")return"#ff4d4d";if(p==="medium")return"#f0a500";return"#4caf8a";}
+function priorityLabel(p){if(p==="high")return"Высокий";if(p==="medium")return"Средний";return"Низкий";}
+function sourceColor(s){if(s==="telegram")return"#2AABEE";if(s==="email")return"#8b5cf6";return"#6b7280";}
+
+async function callClaude(apiKey, prompt) {
+  const res = await fetch(ANTHROPIC_PROXY, {
+    method:"POST",
+    headers:{"Content-Type":"application/json","x-api-key":apiKey,"anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true"},
+    body:JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:2000,messages:[{role:"user",content:prompt}]})
+  });
+  if(!res.ok){const e=await res.json();throw new Error(e.error?.message||"Ошибка Claude API");}
+  const data=await res.json();
+  return data.content.map(b=>b.text||"").join("");
+}
+
+async function extractTasksFromEmails(emails,apiKey){
+  const emailText=emails.map((e,i)=>`=== Письмо ${i+1} ===\nОт: ${e.from}\nТема: ${e.subject}\nДата: ${e.date}\n\n${e.body}`).join("\n\n");
+  const text=await callClaude(apiKey,`Извлеки все задачи из писем. Верни ТОЛЬКО JSON-массив. Каждый объект: title, description, from, source:"email", deadline, priority (high/medium/low), category.\n\nПисьма:\n${emailText}`);
+  return JSON.parse(text.replace(/```json|```/g,"").trim());
+}
+
+async function analyzeTgMessage(msg,apiKey){
+  const text=await callClaude(apiKey,`Проанализируй сообщение из Telegram. От: ${msg.from}, Чат: ${msg.chat}, Текст: ${msg.text}\n\nЕсли рабочая задача — верни JSON: {"is_task":true,"title":"...","description":"...","from":"${msg.from}","source":"telegram","chat":"${msg.chat}","deadline":null,"priority":"high|medium|low","category":"..."}\nЕсли нет — {"is_task":false}\nТолько JSON.`);
+  return JSON.parse(text.replace(/```json|```/g,"").trim());
+}
+
+const DEMO_EMAILS=[
+  {id:1,from:"anna@company.ru",subject:"Квартальный отчёт — нужна подпись",date:"04 марта 2026",body:"Прошу до 7 марта подписать отчёт Q4 и направить в бухгалтерию. Согласуйте бюджет Q1 — встреча 10 марта в 14:00."},
+  {id:2,from:"ivan@partner.com",subject:"Re: Договор поставки",date:"04 марта 2026",body:"Юристы внесли правки. Просим ответить до 6 марта. Позвоните Михаилу по вопросу логистики."},
+  {id:3,from:"hr@company.ru",subject:"Обязательный инструктаж",date:"03 марта 2026",body:"До 15 марта пройдите онлайн-инструктаж и пришлите скриншот сертификата."},
+];
+const DEMO_TG=[
+  {id:1,from:"Дмитрий Волков",chat:"Проект Альфа",text:"Нужно подготовить презентацию для клиента до пятницы. 10 слайдов, акцент на ROI."},
+  {id:2,from:"Марина Козлова",chat:"Личные",text:"Привет! Как дела? Увидимся на выходных?"},
+  {id:3,from:"Алексей Новиков",chat:"Разработка",text:"Баг в модуле авторизации — падает при SSO. Нужно исправить до релиза в четверг."},
+  {id:4,from:"Канал",chat:"Новости",text:"Поздравляем с успешным закрытием квартала! 🎉"},
+  {id:5,from:"Ольга Смирнова",chat:"Финансы",text:"Пришли акты за февраль до конца недели."},
+];
+
+function TaskCard({task,onToggle,onDelete}){
+  const done=task.done;
+  return(
+    <div style={{background:done?"rgba(255,255,255,0.02)":"rgba(255,255,255,0.06)",border:`1px solid ${done?"rgba(255,255,255,0.05)":"rgba(255,255,255,0.11)"}`,borderRadius:12,padding:"14px 18px",marginBottom:10,opacity:done?0.45:1,transition:"all 0.2s"}}>
+      <div style={{display:"flex",gap:12}}>
+        <div onClick={()=>onToggle(task.id)} style={{width:20,height:20,borderRadius:6,flexShrink:0,marginTop:2,cursor:"pointer",border:`2px solid ${done?"#4caf8a":"rgba(255,255,255,0.25)"}`,background:done?"#4caf8a":"transparent",display:"flex",alignItems:"center",justifyContent:"center",transition:"all 0.2s"}}>
+          {done&&<svg width="11" height="9" viewBox="0 0 11 9" fill="none"><path d="M1 4L4 7L10 1" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>}
+        </div>
+        <div style={{flex:1,minWidth:0}}>
+          <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:4}}>
+            <span style={{fontSize:10,fontWeight:700,color:sourceColor(task.source),background:`${sourceColor(task.source)}18`,border:`1px solid ${sourceColor(task.source)}40`,borderRadius:4,padding:"1px 6px"}}>{task.source==="telegram"?"✈️ Telegram":"✉️ Email"}</span>
+            <span style={{fontSize:10,fontWeight:700,textTransform:"uppercase",color:priorityColor(task.priority),background:`${priorityColor(task.priority)}18`,border:`1px solid ${priorityColor(task.priority)}40`,borderRadius:4,padding:"1px 6px"}}>{priorityLabel(task.priority)}</span>
+            <span style={{fontSize:10,color:"rgba(255,255,255,0.3)",background:"rgba(255,255,255,0.05)",borderRadius:4,padding:"1px 6px"}}>{task.category}</span>
+          </div>
+          <div style={{fontWeight:600,fontSize:14,marginBottom:4,color:done?"rgba(255,255,255,0.35)":"#f0ede8",textDecoration:done?"line-through":"none"}}>{task.title}</div>
+          <p style={{margin:"0 0 7px",fontSize:12,color:"rgba(255,255,255,0.45)",lineHeight:1.5}}>{task.description}</p>
+          <div style={{display:"flex",gap:14,alignItems:"center",flexWrap:"wrap"}}>
+            <span style={{fontSize:11,color:"rgba(255,255,255,0.28)"}}>{task.from ? `👤 ${task.from}` : ""}{task.chat && task.chat !== "Прямое сообщение боту" && task.chat !== "Пересланное сообщение" ? ` · 💬 ${task.chat}` : ""}</span>
+            {task.deadline&&<span style={{fontSize:11,color:"#f0a500"}}>📅 {task.deadline}</span>}
+            <button onClick={()=>onDelete(task.id)} style={{marginLeft:"auto",fontSize:11,color:"rgba(255,255,255,0.18)",background:"none",border:"none",cursor:"pointer",padding:0}}>✕</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SelectRow({item,selected,accent,onSelect,children}){
+  const c=accent||"#8b5cf6";
+  return(
+    <div onClick={()=>onSelect(item.id)} style={{display:"flex",alignItems:"flex-start",gap:10,padding:"11px 14px",borderRadius:10,marginBottom:7,cursor:"pointer",transition:"all 0.15s",background:selected?`${c}12`:"rgba(255,255,255,0.04)",border:`1px solid ${selected?`${c}40`:"rgba(255,255,255,0.07)"}`}}>
+      <div style={{width:17,height:17,borderRadius:5,flexShrink:0,marginTop:1,border:`2px solid ${selected?c:"rgba(255,255,255,0.22)"}`,background:selected?c:"transparent",display:"flex",alignItems:"center",justifyContent:"center",transition:"all 0.15s"}}>
+        {selected&&<svg width="9" height="7" viewBox="0 0 9 7" fill="none"><path d="M1 3L3.5 5.5L8 1" stroke="white" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>}
+      </div>
+      <div style={{flex:1,minWidth:0}}>{children}</div>
+    </div>
+  );
+}
+
+function App(){
+  const [apiKey,setApiKey]=useState("");
+  const [showKey,setShowKey]=useState(true);
+  const [tab,setTab]=useState("tasks");
+  const [tasks,setTasks]=useState([]);
+  const [serverOk,setServerOk]=useState(null);
+  const [lastSync,setLastSync]=useState(null);
+  const [error,setError]=useState("");
+  const [selEmails,setSelEmails]=useState([1,2,3]);
+  const [emailLoading,setEmailLoading]=useState(false);
+  const [selTg,setSelTg]=useState([1,3,5]);
+  const [tgLoading,setTgLoading]=useState(false);
+  const [tgProgress,setTgProgress]=useState([]);
+  const pollRef=useRef(null);
+
+  const fetchFromServer=useCallback(async()=>{
+    try{
+      const res=await fetch(`${SERVER}/tasks`);
+      if(!res.ok)throw new Error();
+      setTasks(await res.json());
+      setServerOk(true);
+      setLastSync(new Date());
+    }catch{setServerOk(false);}
+  },[]);
+
+  useEffect(()=>{
+    fetchFromServer();
+    pollRef.current=setInterval(fetchFromServer,POLL_INTERVAL);
+    return()=>clearInterval(pollRef.current);
+  },[fetchFromServer]);
+
+  const toggleDone=async(id)=>{
+    const task=tasks.find(t=>t.id===id);
+    if(!task)return;
+    try{
+      if(!task.done)await fetch(`${SERVER}/tasks/${id}/done`,{method:"PATCH"});
+      else{setTasks(prev=>prev.map(t=>t.id===id?{...t,done:false}:t));return;}
+      fetchFromServer();
+    }catch{setError("Сервер недоступен");}
+  };
+
+  const deleteTask=async(id)=>{
+    try{await fetch(`${SERVER}/tasks/${id}`,{method:"DELETE"});fetchFromServer();}
+    catch{setError("Сервер недоступен");}
+  };
+
+  const postToServer=async(task)=>{
+    const res=await fetch(`${SERVER}/tasks`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(task)});
+    if(!res.ok)throw new Error("Ошибка сервера");
+    return res.json();
+  };
+
+  const handleEmails=useCallback(async()=>{
+    if(!apiKey.trim()){setError("Введите API-ключ");return;}
+    setError("");setEmailLoading(true);
+    try{
+      const extracted=await extractTasksFromEmails(DEMO_EMAILS.filter(e=>selEmails.includes(e.id)),apiKey.trim());
+      for(const t of extracted)await postToServer(t);
+      await fetchFromServer();setTab("tasks");
+    }catch(e){setError(e.message);}finally{setEmailLoading(false);}
+  },[apiKey,selEmails]);
+
+  const handleTelegram=useCallback(async()=>{
+    if(!apiKey.trim()){setError("Введите API-ключ");return;}
+    setError("");setTgLoading(true);
+    const msgs=DEMO_TG.filter(m=>selTg.includes(m.id));
+    setTgProgress(msgs.map(m=>({msgId:m.id,status:"pending"})));
+    try{
+      for(const msg of msgs){
+        const result=await analyzeTgMessage(msg,apiKey.trim());
+        setTgProgress(prev=>prev.map(p=>p.msgId===msg.id?{...p,status:result.is_task?"task":"skip"}:p));
+        if(result.is_task){const{is_task,...td}=result;await postToServer(td);}
+      }
+      await fetchFromServer();setTab("tasks");
+    }catch(e){setError(e.message);}finally{setTgLoading(false);}
+  },[apiKey,selTg]);
+
+  const pending=tasks.filter(t=>!t.done);
+  const done=tasks.filter(t=>t.done);
+
+  return(
+    <div style={{minHeight:"100vh",background:"linear-gradient(140deg,#0d0d12 0%,#13111e 55%,#0d1117 100%)",padding:"28px 18px",display:"flex",justifyContent:"center"}}>
+      <div style={{width:"100%",maxWidth:760}}>
+
+        {/* HEADER */}
+        <div style={{marginBottom:22,animation:"fadeUp .4s ease both"}}>
+          <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:4}}>
+            <div style={{width:34,height:34,borderRadius:9,background:"linear-gradient(135deg,#8b5cf6,#2AABEE)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:17}}>✦</div>
+            <h1 style={{fontFamily:"'Syne',sans-serif",fontWeight:800,fontSize:21,color:"#f0ede8",letterSpacing:"-0.03em"}}>Task Dashboard</h1>
+            <span style={{fontSize:10,fontWeight:700,letterSpacing:"0.1em",color:"#8b5cf6",background:"rgba(139,92,246,.15)",border:"1px solid rgba(139,92,246,.3)",borderRadius:4,padding:"2px 7px"}}>CLAUDE</span>
+            <div style={{marginLeft:"auto",display:"flex",alignItems:"center",gap:5}}>
+              <div style={{width:7,height:7,borderRadius:"50%",background:serverOk===null?"#f0a500":serverOk?"#4caf8a":"#ff4d4d",animation:serverOk?"blink 2s infinite":"none"}}/>
+              <span style={{fontSize:11,color:"rgba(255,255,255,.28)"}}>
+                {serverOk===null?"подключение…":serverOk?`онлайн · ${lastSync?.toLocaleTimeString("ru-RU",{hour:"2-digit",minute:"2-digit",second:"2-digit"})}`:"офлайн"}
+              </span>
+            </div>
+          </div>
+        </div>
+
+        {/* API KEY */}
+        <div style={{background:"rgba(255,255,255,.04)",border:"1px solid rgba(255,255,255,.08)",borderRadius:13,padding:"13px 17px",marginBottom:14}}>
+          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",cursor:"pointer"}} onClick={()=>setShowKey(v=>!v)}>
+            <div style={{display:"flex",alignItems:"center",gap:8}}>
+              <span>🔑</span>
+              <span style={{fontSize:13,fontWeight:600,color:apiKey?"#4caf8a":"rgba(255,255,255,.5)"}}>{apiKey?"API-ключ задан":"Anthropic API-ключ"}</span>
+            </div>
+            <span style={{fontSize:11,color:"rgba(255,255,255,.18)"}}>{showKey?"▲":"▼"}</span>
+          </div>
+          {showKey&&<input type="password" value={apiKey} onChange={e=>setApiKey(e.target.value)} placeholder="sk-ant-api03-..." style={{marginTop:10,width:"100%",background:"rgba(255,255,255,.05)",border:"1px solid rgba(255,255,255,.09)",borderRadius:8,padding:"9px 13px",fontSize:13,color:"#f0ede8",outline:"none",fontFamily:"monospace"}}/>}
+        </div>
+
+        {/* TABS */}
+        <div style={{display:"flex",gap:3,background:"rgba(255,255,255,.04)",border:"1px solid rgba(255,255,255,.08)",borderRadius:12,padding:3,marginBottom:14}}>
+          {[
+            {id:"tasks",label:`✦ Задачи${tasks.length?` (${pending.length}/${tasks.length})`:""}`,active:"#f0ede8",bg:"rgba(255,255,255,.09)"},
+            {id:"email",label:"✉️ Email",active:"#c4b5fd",bg:"rgba(139,92,246,.18)"},
+            {id:"telegram",label:"✈️ Telegram",active:"#7dd3fc",bg:"rgba(43,171,238,.18)"},
+          ].map(t=>(
+            <button key={t.id} onClick={()=>setTab(t.id)} style={{flex:1,padding:"9px 10px",borderRadius:9,border:"none",background:tab===t.id?t.bg:"transparent",color:tab===t.id?t.active:"rgba(255,255,255,.32)",fontSize:13,fontWeight:600,cursor:"pointer",transition:"all .18s",fontFamily:"'DM Sans',sans-serif"}}>{t.label}</button>
+          ))}
+        </div>
+
+        {/* TASKS */}
+        {tab==="tasks"&&(
+          <div style={{animation:"fadeUp .3s ease both"}}>
+            {tasks.length===0?(
+              <div style={{textAlign:"center",padding:"56px 0",color:"rgba(255,255,255,.2)"}}>
+                <div style={{fontSize:30,marginBottom:10}}>📭</div>
+                <p style={{fontSize:14}}>{serverOk?"Задач пока нет — напишите боту в Telegram":"Подключение к серверу..."}</p>
+              </div>
+            ):(
+              <>
+                <div style={{display:"flex",gap:8,marginBottom:18,flexWrap:"wrap"}}>
+                  {[
+                    {label:"Всего",value:tasks.length,color:"#8b5cf6"},
+                    {label:"Активных",value:pending.length,color:"#f0a500"},
+                    {label:"Выполнено",value:done.length,color:"#4caf8a"},
+                    {label:"Email",value:tasks.filter(t=>t.source==="email").length,color:"#8b5cf6"},
+                    {label:"Telegram",value:tasks.filter(t=>t.source==="telegram").length,color:"#2AABEE"},
+                  ].map(s=>(
+                    <div key={s.label} style={{flex:1,minWidth:70,background:"rgba(255,255,255,.04)",border:"1px solid rgba(255,255,255,.07)",borderRadius:10,padding:"9px 12px",textAlign:"center"}}>
+                      <div style={{fontSize:20,fontFamily:"'Syne',sans-serif",fontWeight:800,color:s.color}}>{s.value}</div>
+                      <div style={{fontSize:10,color:"rgba(255,255,255,.26)",marginTop:1}}>{s.label}</div>
+                    </div>
+                  ))}
+                </div>
+                {pending.length>0&&<><p style={{fontSize:11,fontWeight:700,letterSpacing:"0.08em",color:"rgba(255,255,255,.22)",textTransform:"uppercase",marginBottom:9}}>Активные</p>{pending.map(t=><TaskCard key={t.id} task={t} onToggle={toggleDone} onDelete={deleteTask}/>)}</>}
+                {done.length>0&&<><p style={{fontSize:11,fontWeight:700,letterSpacing:"0.08em",color:"rgba(255,255,255,.13)",textTransform:"uppercase",margin:"18px 0 9px"}}>Выполнено</p>{done.map(t=><TaskCard key={t.id} task={t} onToggle={toggleDone} onDelete={deleteTask}/>)}</>}
+              </>
+            )}
+          </div>
+        )}
+
+        {/* EMAIL */}
+        {tab==="email"&&(
+          <div style={{animation:"fadeUp .3s ease both"}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+              <p style={{fontSize:12,color:"rgba(255,255,255,.28)"}}>Выбрано: {selEmails.length}</p>
+              <button onClick={()=>setSelEmails(selEmails.length===DEMO_EMAILS.length?[]:DEMO_EMAILS.map(e=>e.id))} style={{fontSize:11,fontWeight:600,color:"#8b5cf6",background:"none",border:"none",cursor:"pointer"}}>
+                {selEmails.length===DEMO_EMAILS.length?"Снять все":"Выбрать все"}
+              </button>
+            </div>
+            {DEMO_EMAILS.map(e=>(
+              <SelectRow key={e.id} item={e} selected={selEmails.includes(e.id)} accent="#8b5cf6" onSelect={id=>setSelEmails(p=>p.includes(id)?p.filter(x=>x!==id):[...p,id])}>
+                <div style={{fontSize:13,fontWeight:600,color:"#f0ede8",marginBottom:2,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{e.subject}</div>
+                <div style={{fontSize:11,color:"rgba(255,255,255,.32)"}}>{e.from} · {e.date}</div>
+              </SelectRow>
+            ))}
+            <button onClick={handleEmails} disabled={emailLoading||!selEmails.length} style={{width:"100%",marginTop:12,padding:"13px",border:"none",borderRadius:11,background:emailLoading||!selEmails.length?"rgba(139,92,246,.18)":"linear-gradient(135deg,#8b5cf6,#6366f1)",color:emailLoading||!selEmails.length?"rgba(255,255,255,.28)":"#fff",fontSize:14,fontWeight:700,cursor:emailLoading||!selEmails.length?"not-allowed":"pointer",fontFamily:"'DM Sans',sans-serif",display:"flex",alignItems:"center",justifyContent:"center",gap:8}}>
+              {emailLoading?<><span style={{animation:"spin .8s linear infinite",display:"inline-block"}}>⟳</span>Анализирую…</>:`✉️ Извлечь задачи из ${selEmails.length} писем`}
+            </button>
+          </div>
+        )}
+
+        {/* TELEGRAM */}
+        {tab==="telegram"&&(
+          <div style={{animation:"fadeUp .3s ease both"}}>
+            <div style={{padding:"13px 15px",marginBottom:14,background:"rgba(43,171,238,.07)",border:"1px solid rgba(43,171,238,.2)",borderRadius:12}}>
+              <p style={{fontSize:12,fontWeight:700,color:"#7dd3fc",marginBottom:5}}>✈️ Telegram-бот работает на Railway</p>
+              <p style={{fontSize:12,color:"rgba(255,255,255,.38)",lineHeight:1.6}}>Задачи появляются автоматически каждые 5 секунд. Ниже — демо для ручной проверки.</p>
+            </div>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+              <p style={{fontSize:12,color:"rgba(255,255,255,.28)"}}>Выбрано: {selTg.length}</p>
+              <button onClick={()=>setSelTg(selTg.length===DEMO_TG.length?[]:DEMO_TG.map(m=>m.id))} style={{fontSize:11,fontWeight:600,color:"#2AABEE",background:"none",border:"none",cursor:"pointer"}}>
+                {selTg.length===DEMO_TG.length?"Снять все":"Выбрать все"}
+              </button>
+            </div>
+            {DEMO_TG.map(m=>{
+              const prog=tgProgress.find(p=>p.msgId===m.id);
+              return(
+                <SelectRow key={m.id} item={m} selected={selTg.includes(m.id)} accent="#2AABEE" onSelect={id=>setSelTg(p=>p.includes(id)?p.filter(x=>x!==id):[...p,id])}>
+                  <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:2,flexWrap:"wrap"}}>
+                    <span style={{fontSize:13,fontWeight:600,color:"#f0ede8"}}>{m.from}</span>
+                    <span style={{fontSize:10,color:"rgba(255,255,255,.28)",background:"rgba(255,255,255,.05)",borderRadius:4,padding:"1px 5px"}}>{m.chat}</span>
+                    {prog&&prog.status!=="pending"&&<span style={{fontSize:10,fontWeight:700,marginLeft:"auto",color:prog.status==="task"?"#4caf8a":"rgba(255,255,255,.22)",background:prog.status==="task"?"rgba(76,175,138,.12)":"rgba(255,255,255,.04)",border:`1px solid ${prog.status==="task"?"rgba(76,175,138,.3)":"rgba(255,255,255,.08)"}`,borderRadius:4,padding:"1px 6px"}}>{prog.status==="task"?"✓ Задача":"— Не задача"}</span>}
+                    {prog&&prog.status==="pending"&&<span style={{fontSize:10,color:"#f0a500",animation:"pulse 1s infinite",marginLeft:"auto"}}>⟳</span>}
+                  </div>
+                  <div style={{fontSize:12,color:"rgba(255,255,255,.38)",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{m.text}</div>
+                </SelectRow>
+              );
+            })}
+            <button onClick={handleTelegram} disabled={tgLoading||!selTg.length} style={{width:"100%",marginTop:12,padding:"13px",border:"none",borderRadius:11,background:tgLoading||!selTg.length?"rgba(43,171,238,.15)":"linear-gradient(135deg,#2AABEE,#1a8bbf)",color:tgLoading||!selTg.length?"rgba(255,255,255,.28)":"#fff",fontSize:14,fontWeight:700,cursor:tgLoading||!selTg.length?"not-allowed":"pointer",fontFamily:"'DM Sans',sans-serif",display:"flex",alignItems:"center",justifyContent:"center",gap:8}}>
+              {tgLoading?<><span style={{animation:"spin .8s linear infinite",display:"inline-block"}}>⟳</span>Анализирую…</>:`✈️ Проверить ${selTg.length} демо-сообщений`}
+            </button>
+          </div>
+        )}
+
+        {error&&<div style={{marginTop:12,padding:"11px 15px",background:"rgba(255,77,77,.1)",border:"1px solid rgba(255,77,77,.3)",borderRadius:10,fontSize:13,color:"#ff8080"}}>⚠ {error}</div>}
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
