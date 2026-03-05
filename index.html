@@ -13,10 +13,10 @@
   body{background:#0d0d12;font-family:'DM Sans',sans-serif}
   ::-webkit-scrollbar{width:4px}
   ::-webkit-scrollbar-thumb{background:rgba(255,255,255,.1);border-radius:2px}
-  input::placeholder{color:rgba(255,255,255,.22)}
+  input::placeholder,textarea::placeholder{color:rgba(255,255,255,.22)}
+  input,textarea,select{outline:none;font-family:'DM Sans',sans-serif}
   @keyframes spin{to{transform:rotate(360deg)}}
   @keyframes fadeUp{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:translateY(0)}}
-  @keyframes pulse{0%,100%{opacity:.4}50%{opacity:1}}
   @keyframes blink{0%,100%{opacity:1}50%{opacity:.3}}
 </style>
 </head>
@@ -25,102 +25,122 @@
 <script type="text/babel">
 const { useState, useCallback, useEffect, useRef } = React;
 
-const ANTHROPIC_PROXY = "https://api.anthropic.com/v1/messages";
 const SERVER = "https://web-production-7b224.up.railway.app";
 const POLL_INTERVAL = 5000;
 
-function priorityColor(p){if(p==="high")return"#ff4d4d";if(p==="medium")return"#f0a500";return"#4caf8a";}
-function priorityLabel(p){if(p==="high")return"Высокий";if(p==="medium")return"Средний";return"Низкий";}
-function sourceColor(s){if(s==="telegram")return"#2AABEE";if(s==="email")return"#8b5cf6";return"#6b7280";}
+// ── Утилиты ───────────────────────────────────────────────────────────────────
+function pColor(p){return p==="high"?"#ff4d4d":p==="medium"?"#f0a500":"#4caf8a";}
+function pLabel(p){return p==="high"?"Высокий":p==="medium"?"Средний":"Низкий";}
+function sColor(s){return s==="telegram"?"#2AABEE":s==="email"?"#8b5cf6":"#6b7280";}
 
-function getWeekLabel(date) {
-  const now = new Date();
-  const d = new Date(date);
-  const startOfWeek = (dt) => { const d2=new Date(dt); d2.setDate(d2.getDate()-d2.getDay()+1); d2.setHours(0,0,0,0); return d2; };
-  const thisWeek = startOfWeek(now);
-  const lastWeek = new Date(thisWeek); lastWeek.setDate(lastWeek.getDate()-7);
-  const taskWeek = startOfWeek(d);
-  if(taskWeek.getTime()===thisWeek.getTime()) return "Эта неделя";
-  if(taskWeek.getTime()===lastWeek.getTime()) return "Прошлая неделя";
-  const weekEnd = new Date(taskWeek); weekEnd.setDate(weekEnd.getDate()+6);
-  return `${taskWeek.getDate()} — ${weekEnd.getDate()} ${weekEnd.toLocaleString("ru-RU",{month:"long"})}`;
+function getWeekLabel(date){
+  const now=new Date(),d=new Date(date);
+  const sw=dt=>{const x=new Date(dt);x.setDate(x.getDate()-x.getDay()+1);x.setHours(0,0,0,0);return x;};
+  const tw=sw(now),lw=new Date(tw);lw.setDate(lw.getDate()-7);
+  const dk=sw(d);
+  if(dk.getTime()===tw.getTime())return"Эта неделя";
+  if(dk.getTime()===lw.getTime())return"Прошлая неделя";
+  const we=new Date(dk);we.setDate(we.getDate()+6);
+  return`${dk.getDate()} — ${we.getDate()} ${we.toLocaleString("ru-RU",{month:"long"})}`;
 }
-
-function getMonthLabel(date) {
-  const d = new Date(date);
-  const now = new Date();
-  if(d.getMonth()===now.getMonth()&&d.getFullYear()===now.getFullYear()) return "Этот месяц";
-  const prevMonth = new Date(now.getFullYear(), now.getMonth()-1, 1);
-  if(d.getMonth()===prevMonth.getMonth()&&d.getFullYear()===prevMonth.getFullYear()) return "Прошлый месяц";
+function getMonthLabel(date){
+  const d=new Date(date),now=new Date();
+  if(d.getMonth()===now.getMonth()&&d.getFullYear()===now.getFullYear())return"Этот месяц";
+  const pm=new Date(now.getFullYear(),now.getMonth()-1,1);
+  if(d.getMonth()===pm.getMonth()&&d.getFullYear()===pm.getFullYear())return"Прошлый месяц";
   return d.toLocaleString("ru-RU",{month:"long",year:"numeric"});
 }
-
-function groupTasks(tasks, mode) {
-  const groups = {};
-  const sorted = [...tasks].sort((a,b) => new Date(b.created_at)-new Date(a.created_at));
-  sorted.forEach(t => {
-    const label = mode==="week" ? getWeekLabel(t.created_at) : getMonthLabel(t.created_at);
-    if(!groups[label]) groups[label]=[];
+function groupBy(tasks,mode){
+  const groups={};
+  [...tasks].sort((a,b)=>new Date(b.created_at)-new Date(a.created_at)).forEach(t=>{
+    const label=mode==="week"?getWeekLabel(t.created_at):getMonthLabel(t.created_at);
+    if(!groups[label])groups[label]=[];
     groups[label].push(t);
   });
   return groups;
 }
 
-async function callClaude(apiKey, prompt) {
-  const res = await fetch(ANTHROPIC_PROXY, {
-    method:"POST",
-    headers:{"Content-Type":"application/json","x-api-key":apiKey,"anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true"},
-    body:JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:2000,messages:[{role:"user",content:prompt}]})
-  });
-  if(!res.ok){const e=await res.json();throw new Error(e.error?.message||"Ошибка Claude API");}
-  const data=await res.json();
-  return data.content.map(b=>b.text||"").join("");
+// ── API ────────────────────────────────────────────────────────────────────────
+const api = {
+  get: (path) => fetch(`${SERVER}${path}`).then(r=>r.json()),
+  post: (path,body) => fetch(`${SERVER}${path}`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)}).then(r=>r.json()),
+  patch: (path,body) => fetch(`${SERVER}${path}`,{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)}).then(r=>r.json()),
+  del: (path) => fetch(`${SERVER}${path}`,{method:"DELETE"}).then(r=>r.json()),
+};
+
+// ── Компоненты ────────────────────────────────────────────────────────────────
+
+function Badge({color,bg,border,children}){
+  return <span style={{fontSize:10,fontWeight:700,color,background:bg,border:`1px solid ${border}`,borderRadius:4,padding:"1px 6px"}}>{children}</span>;
 }
 
-async function extractTasksFromEmails(emails,apiKey){
-  const emailText=emails.map((e,i)=>`=== Письмо ${i+1} ===\nОт: ${e.from}\nТема: ${e.subject}\nДата: ${e.date}\n\n${e.body}`).join("\n\n");
-  const text=await callClaude(apiKey,`Извлеки все задачи из писем. Верни ТОЛЬКО JSON-массив. Каждый объект: title, description, from, source:"email", deadline, priority (high/medium/low), category.\n\nПисьма:\n${emailText}`);
-  return JSON.parse(text.replace(/```json|```/g,"").trim());
-}
-
-async function analyzeTgMessage(msg,apiKey){
-  const text=await callClaude(apiKey,`Проанализируй сообщение из Telegram. От: ${msg.from}, Чат: ${msg.chat}, Текст: ${msg.text}\n\nЕсли рабочая задача — верни JSON: {"is_task":true,"title":"...","description":"...","from":"${msg.from}","source":"telegram","chat":"${msg.chat}","deadline":null,"priority":"high|medium|low","category":"..."}\nЕсли нет — {"is_task":false}\nТолько JSON.`);
-  return JSON.parse(text.replace(/```json|```/g,"").trim());
-}
-
-const DEMO_EMAILS=[
-  {id:1,from:"anna@company.ru",subject:"Квартальный отчёт — нужна подпись",date:"04 марта 2026",body:"Прошу до 7 марта подписать отчёт Q4 и направить в бухгалтерию. Согласуйте бюджет Q1 — встреча 10 марта в 14:00."},
-  {id:2,from:"ivan@partner.com",subject:"Re: Договор поставки",date:"04 марта 2026",body:"Юристы внесли правки. Просим ответить до 6 марта. Позвоните Михаилу по вопросу логистики."},
-  {id:3,from:"hr@company.ru",subject:"Обязательный инструктаж",date:"03 марта 2026",body:"До 15 марта пройдите онлайн-инструктаж и пришлите скриншот сертификата."},
-];
-const DEMO_TG=[
-  {id:1,from:"Дмитрий Волков",chat:"Проект Альфа",text:"Нужно подготовить презентацию для клиента до пятницы. 10 слайдов, акцент на ROI."},
-  {id:2,from:"Марина Козлова",chat:"Личные",text:"Привет! Как дела? Увидимся на выходных?"},
-  {id:3,from:"Алексей Новиков",chat:"Разработка",text:"Баг в модуле авторизации — падает при SSO. Нужно исправить до релиза в четверг."},
-  {id:4,from:"Канал",chat:"Новости",text:"Поздравляем с успешным закрытием квартала! 🎉"},
-  {id:5,from:"Ольга Смирнова",chat:"Финансы",text:"Пришли акты за февраль до конца недели."},
-];
-
-function TaskCard({task,onToggle,onDelete}){
-  const done=task.done;
+function Btn({onClick,disabled,color,gradient,children,small,full}){
+  const bg=disabled?"rgba(255,255,255,.06)":gradient||color||"rgba(255,255,255,.08)";
+  const c=disabled?"rgba(255,255,255,.2)":"#fff";
   return(
-    <div style={{background:done?"rgba(255,255,255,0.02)":"rgba(255,255,255,0.06)",border:`1px solid ${done?"rgba(255,255,255,0.05)":"rgba(255,255,255,0.11)"}`,borderRadius:12,padding:"14px 18px",marginBottom:10,opacity:done?0.5:1,transition:"all 0.2s"}}>
+    <button onClick={onClick} disabled={disabled} style={{
+      width:full?"100%":undefined,padding:small?"6px 12px":"10px 16px",
+      border:"none",borderRadius:8,background:bg,color:c,
+      fontSize:small?12:13,fontWeight:600,cursor:disabled?"not-allowed":"pointer",
+      fontFamily:"'DM Sans',sans-serif",transition:"all .15s",display:"inline-flex",
+      alignItems:"center",justifyContent:"center",gap:6
+    }}>{children}</button>
+  );
+}
+
+function Input({value,onChange,placeholder,type="text",style={}}){
+  return(
+    <input type={type} value={value} onChange={e=>onChange(e.target.value)} placeholder={placeholder}
+      style={{width:"100%",background:"rgba(255,255,255,.05)",border:"1px solid rgba(255,255,255,.09)",
+        borderRadius:8,padding:"9px 13px",fontSize:13,color:"#f0ede8",...style}}/>
+  );
+}
+
+function Select({value,onChange,children,style={}}){
+  return(
+    <select value={value} onChange={e=>onChange(e.target.value)} style={{
+      width:"100%",background:"#1a1825",border:"1px solid rgba(255,255,255,.09)",
+      borderRadius:8,padding:"9px 13px",fontSize:13,color:"#f0ede8",...style
+    }}>{children}</select>
+  );
+}
+
+function TaskCard({task,projects,onToggle,onDelete,onProjectChange}){
+  const done=task.done;
+  const proj=projects.find(p=>p.id===task.project_id);
+  const client=proj?.client_name;
+  return(
+    <div style={{background:done?"rgba(255,255,255,.02)":"rgba(255,255,255,.055)",border:`1px solid ${done?"rgba(255,255,255,.04)":"rgba(255,255,255,.1)"}`,borderRadius:12,padding:"14px 18px",marginBottom:9,opacity:done?.5:1,transition:"all .2s"}}>
       <div style={{display:"flex",gap:12}}>
-        <div onClick={()=>onToggle(task.id)} style={{width:20,height:20,borderRadius:6,flexShrink:0,marginTop:2,cursor:"pointer",border:`2px solid ${done?"#4caf8a":"rgba(255,255,255,0.25)"}`,background:done?"#4caf8a":"transparent",display:"flex",alignItems:"center",justifyContent:"center",transition:"all 0.2s"}}>
+        <div onClick={()=>onToggle(task.id)} style={{width:20,height:20,borderRadius:6,flexShrink:0,marginTop:2,cursor:"pointer",border:`2px solid ${done?"#4caf8a":"rgba(255,255,255,.22)"}`,background:done?"#4caf8a":"transparent",display:"flex",alignItems:"center",justifyContent:"center",transition:"all .2s"}}>
           {done&&<svg width="11" height="9" viewBox="0 0 11 9" fill="none"><path d="M1 4L4 7L10 1" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>}
         </div>
         <div style={{flex:1,minWidth:0}}>
-          <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:4}}>
-            <span style={{fontSize:10,fontWeight:700,color:sourceColor(task.source),background:`${sourceColor(task.source)}18`,border:`1px solid ${sourceColor(task.source)}40`,borderRadius:4,padding:"1px 6px"}}>{task.source==="telegram"?"✈️ Telegram":"✉️ Email"}</span>
-            <span style={{fontSize:10,fontWeight:700,textTransform:"uppercase",color:priorityColor(task.priority),background:`${priorityColor(task.priority)}18`,border:`1px solid ${priorityColor(task.priority)}40`,borderRadius:4,padding:"1px 6px"}}>{priorityLabel(task.priority)}</span>
-            <span style={{fontSize:10,color:"rgba(255,255,255,0.3)",background:"rgba(255,255,255,0.05)",borderRadius:4,padding:"1px 6px"}}>{task.category}</span>
+          {/* Badges */}
+          <div style={{display:"flex",gap:5,flexWrap:"wrap",marginBottom:5}}>
+            <Badge color={sColor(task.source)} bg={`${sColor(task.source)}18`} border={`${sColor(task.source)}40`}>{task.source==="telegram"?"✈️ Telegram":"✉️ Email"}</Badge>
+            <Badge color={pColor(task.priority)} bg={`${pColor(task.priority)}18`} border={`${pColor(task.priority)}40`}>{pLabel(task.priority)}</Badge>
+            {task.category&&<Badge color="rgba(255,255,255,.35)" bg="rgba(255,255,255,.05)" border="rgba(255,255,255,.08)">{task.category}</Badge>}
+            {proj&&<Badge color="#a78bfa" bg="rgba(167,139,250,.12)" border="rgba(167,139,250,.3)">📁 {client?`${client} / `:""}{proj.name}</Badge>}
           </div>
-          <div style={{fontWeight:600,fontSize:14,marginBottom:4,color:done?"rgba(255,255,255,0.35)":"#f0ede8",textDecoration:done?"line-through":"none"}}>{task.title}</div>
-          <p style={{margin:"0 0 7px",fontSize:12,color:"rgba(255,255,255,0.45)",lineHeight:1.5}}>{task.description}</p>
-          <div style={{display:"flex",gap:14,alignItems:"center",flexWrap:"wrap"}}>
-            <span style={{fontSize:11,color:"rgba(255,255,255,0.28)"}}>{task.from?`👤 ${task.from}`:""}{task.chat&&task.chat!=="Прямое сообщение боту"&&task.chat!=="Пересланное сообщение"?` · 💬 ${task.chat}`:""}</span>
+          {/* Title */}
+          <div style={{fontWeight:600,fontSize:14,marginBottom:4,color:done?"rgba(255,255,255,.3)":"#f0ede8",textDecoration:done?"line-through":"none"}}>{task.title}</div>
+          {/* Description */}
+          <p style={{margin:"0 0 8px",fontSize:12,color:"rgba(255,255,255,.4)",lineHeight:1.55,whiteSpace:"pre-line"}}>{task.description}</p>
+          {/* Footer */}
+          <div style={{display:"flex",gap:12,alignItems:"center",flexWrap:"wrap"}}>
+            {task.from&&<span style={{fontSize:11,color:"rgba(255,255,255,.25)"}}>👤 {task.from}</span>}
             {task.deadline&&<span style={{fontSize:11,color:"#f0a500"}}>📅 {task.deadline}</span>}
-            <button onClick={()=>onDelete(task.id)} style={{marginLeft:"auto",fontSize:11,color:"rgba(255,255,255,0.18)",background:"none",border:"none",cursor:"pointer",padding:0}}>✕</button>
+            {task.posted_at&&<span style={{fontSize:11,color:"rgba(255,255,255,.18)"}}>{new Date(task.posted_at).toLocaleString("ru-RU",{day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"})}</span>}
+            {/* Project selector */}
+            {!done&&!proj&&(
+              <select onChange={e=>onProjectChange(task.id,e.target.value?parseInt(e.target.value):null)} defaultValue=""
+                style={{marginLeft:"auto",fontSize:11,background:"rgba(255,255,255,.05)",border:"1px solid rgba(255,255,255,.08)",borderRadius:5,padding:"2px 6px",color:"rgba(255,255,255,.3)",cursor:"pointer"}}>
+                <option value="">📁 Проект</option>
+                {projects.map(p=><option key={p.id} value={p.id}>{p.client_name?`${p.client_name} / `:""}{p.name}</option>)}
+              </select>
+            )}
+            <button onClick={()=>onDelete(task.id)} style={{marginLeft:proj||done?"auto":"4px",fontSize:11,color:"rgba(255,255,255,.15)",background:"none",border:"none",cursor:"pointer",padding:0}}>✕</button>
           </div>
         </div>
       </div>
@@ -128,181 +148,326 @@ function TaskCard({task,onToggle,onDelete}){
   );
 }
 
-function GroupSection({label,tasks,onToggle,onDelete,defaultOpen}){
+function GroupSection({label,tasks,projects,onToggle,onDelete,onProjectChange,defaultOpen}){
   const [open,setOpen]=useState(defaultOpen);
   return(
     <div style={{marginBottom:16}}>
-      <div onClick={()=>setOpen(v=>!v)} style={{display:"flex",alignItems:"center",gap:8,marginBottom:open?10:0,cursor:"pointer",userSelect:"none",padding:"6px 0"}}>
-        <span style={{fontSize:11,fontWeight:700,letterSpacing:"0.08em",color:"rgba(255,255,255,.25)",textTransform:"uppercase"}}>{label}</span>
-        <span style={{fontSize:10,color:"rgba(255,255,255,.15)",background:"rgba(255,255,255,.05)",borderRadius:10,padding:"1px 7px"}}>{tasks.length}</span>
-        <span style={{fontSize:11,color:"rgba(255,255,255,.15)",marginLeft:"auto"}}>{open?"▲":"▼"}</span>
+      <div onClick={()=>setOpen(v=>!v)} style={{display:"flex",alignItems:"center",gap:8,padding:"6px 0",cursor:"pointer",userSelect:"none"}}>
+        <span style={{fontSize:11,fontWeight:700,letterSpacing:".08em",color:"rgba(255,255,255,.2)",textTransform:"uppercase"}}>{label}</span>
+        <span style={{fontSize:10,color:"rgba(255,255,255,.13)",background:"rgba(255,255,255,.05)",borderRadius:10,padding:"1px 7px"}}>{tasks.length}</span>
+        <span style={{marginLeft:"auto",fontSize:11,color:"rgba(255,255,255,.13)"}}>{open?"▲":"▼"}</span>
       </div>
-      {open&&tasks.map(t=><TaskCard key={t.id} task={t} onToggle={onToggle} onDelete={onDelete}/>)}
+      {open&&tasks.map(t=><TaskCard key={t.id} task={t} projects={projects} onToggle={onToggle} onDelete={onDelete} onProjectChange={onProjectChange}/>)}
     </div>
   );
 }
 
-function SelectRow({item,selected,accent,onSelect,children}){
-  const c=accent||"#8b5cf6";
+// ── Вкладка Проекты ───────────────────────────────────────────────────────────
+
+function ProjectsTab({tasks,onRefresh}){
+  const [clients,setClients]=useState([]);
+  const [projects,setProjects]=useState([]);
+  const [newClientName,setNewClientName]=useState("");
+  const [newProjName,setNewProjName]=useState("");
+  const [newProjClient,setNewProjClient]=useState("");
+  const [loading,setLoading]=useState(false);
+  const [expandedClient,setExpandedClient]=useState(null);
+
+  const load=useCallback(async()=>{
+    const [c,p]=await Promise.all([api.get("/clients"),api.get("/projects")]);
+    setClients(c);setProjects(p);
+    if(c.length>0&&expandedClient===null)setExpandedClient(c[0].id);
+  },[]);
+
+  useEffect(()=>{load();},[load]);
+
+  const addClient=async()=>{
+    if(!newClientName.trim())return;
+    setLoading(true);
+    await api.post("/clients",{name:newClientName.trim()});
+    setNewClientName("");await load();setLoading(false);
+  };
+
+  const addProject=async()=>{
+    if(!newProjName.trim())return;
+    setLoading(true);
+    await api.post("/projects",{name:newProjName.trim(),client_id:newProjClient?parseInt(newProjClient):null});
+    setNewProjName("");setNewProjClient("");await load();onRefresh();setLoading(false);
+  };
+
+  const removeClient=async(id)=>{
+    await api.del(`/clients/${id}`);await load();onRefresh();
+  };
+
+  const removeProject=async(id)=>{
+    await api.del(`/projects/${id}`);await load();onRefresh();
+  };
+
+  // Статистика по проектам
+  const tasksByProject={};
+  tasks.forEach(t=>{
+    const key=t.project_id||"none";
+    if(!tasksByProject[key])tasksByProject[key]={total:0,active:0};
+    tasksByProject[key].total++;
+    if(!t.done)tasksByProject[key].active++;
+  });
+  const noProject=tasks.filter(t=>!t.project_id);
+
   return(
-    <div onClick={()=>onSelect(item.id)} style={{display:"flex",alignItems:"flex-start",gap:10,padding:"11px 14px",borderRadius:10,marginBottom:7,cursor:"pointer",transition:"all 0.15s",background:selected?`${c}12`:"rgba(255,255,255,0.04)",border:`1px solid ${selected?`${c}40`:"rgba(255,255,255,0.07)"}`}}>
-      <div style={{width:17,height:17,borderRadius:5,flexShrink:0,marginTop:1,border:`2px solid ${selected?c:"rgba(255,255,255,0.22)"}`,background:selected?c:"transparent",display:"flex",alignItems:"center",justifyContent:"center",transition:"all 0.15s"}}>
-        {selected&&<svg width="9" height="7" viewBox="0 0 9 7" fill="none"><path d="M1 3L3.5 5.5L8 1" stroke="white" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>}
+    <div style={{animation:"fadeUp .3s ease both"}}>
+
+      {/* Статистика */}
+      <div style={{display:"flex",gap:8,marginBottom:18,flexWrap:"wrap"}}>
+        {[
+          {label:"Клиентов",value:clients.length,color:"#a78bfa"},
+          {label:"Проектов",value:projects.length,color:"#7dd3fc"},
+          {label:"Без проекта",value:noProject.filter(t=>!t.done).length,color:"#f0a500"},
+        ].map(s=>(
+          <div key={s.label} style={{flex:1,minWidth:80,background:"rgba(255,255,255,.04)",border:"1px solid rgba(255,255,255,.07)",borderRadius:10,padding:"9px 12px",textAlign:"center"}}>
+            <div style={{fontSize:20,fontFamily:"'Syne',sans-serif",fontWeight:800,color:s.color}}>{s.value}</div>
+            <div style={{fontSize:10,color:"rgba(255,255,255,.25)",marginTop:1}}>{s.label}</div>
+          </div>
+        ))}
       </div>
-      <div style={{flex:1,minWidth:0}}>{children}</div>
+
+      {/* Список клиентов и проектов */}
+      <div style={{marginBottom:18}}>
+        {clients.length===0?(
+          <div style={{textAlign:"center",padding:"28px 0",color:"rgba(255,255,255,.2)",fontSize:13}}>Клиентов пока нет — добавьте ниже</div>
+        ):(
+          clients.map(c=>{
+            const cProjects=projects.filter(p=>p.client_id===c.id);
+            const cTasks=tasks.filter(t=>cProjects.some(p=>p.id===t.project_id));
+            const activeTasks=cTasks.filter(t=>!t.done).length;
+            const isOpen=expandedClient===c.id;
+            return(
+              <div key={c.id} style={{marginBottom:8,background:"rgba(255,255,255,.04)",border:"1px solid rgba(255,255,255,.07)",borderRadius:12,overflow:"hidden"}}>
+                {/* Клиент заголовок */}
+                <div onClick={()=>setExpandedClient(isOpen?null:c.id)} style={{display:"flex",alignItems:"center",gap:10,padding:"12px 16px",cursor:"pointer"}}>
+                  <span style={{fontSize:15}}>🏢</span>
+                  <span style={{fontWeight:700,fontSize:14,color:"#f0ede8"}}>{c.name}</span>
+                  <span style={{fontSize:11,color:"rgba(255,255,255,.25)",marginLeft:4}}>{cProjects.length} проектов</span>
+                  {activeTasks>0&&<span style={{fontSize:10,fontWeight:700,color:"#f0a500",background:"rgba(240,165,0,.12)",border:"1px solid rgba(240,165,0,.25)",borderRadius:10,padding:"1px 7px",marginLeft:4}}>{activeTasks} задач</span>}
+                  <span style={{marginLeft:"auto",fontSize:11,color:"rgba(255,255,255,.2)"}}>{isOpen?"▲":"▼"}</span>
+                  <button onClick={e=>{e.stopPropagation();removeClient(c.id);}} style={{fontSize:11,color:"rgba(255,255,255,.15)",background:"none",border:"none",cursor:"pointer",padding:"0 0 0 8px"}}>✕</button>
+                </div>
+                {/* Проекты клиента */}
+                {isOpen&&(
+                  <div style={{padding:"0 16px 12px"}}>
+                    {cProjects.length===0?(
+                      <div style={{fontSize:12,color:"rgba(255,255,255,.2)",padding:"8px 0"}}>Проектов нет</div>
+                    ):(
+                      cProjects.map(p=>{
+                        const ps=tasksByProject[p.id]||{total:0,active:0};
+                        return(
+                          <div key={p.id} style={{display:"flex",alignItems:"center",gap:8,padding:"8px 12px",background:"rgba(255,255,255,.03)",borderRadius:8,marginBottom:5}}>
+                            <span style={{fontSize:13}}>📁</span>
+                            <span style={{fontSize:13,fontWeight:600,color:"#d4d0f0"}}>{p.name}</span>
+                            {ps.active>0&&<span style={{fontSize:10,color:"#7dd3fc",background:"rgba(125,211,252,.1)",border:"1px solid rgba(125,211,252,.2)",borderRadius:8,padding:"1px 6px"}}>{ps.active} активных</span>}
+                            {ps.total>0&&<span style={{fontSize:10,color:"rgba(255,255,255,.2)"}}>{ps.total} всего</span>}
+                            <button onClick={()=>removeProject(p.id)} style={{marginLeft:"auto",fontSize:11,color:"rgba(255,255,255,.15)",background:"none",border:"none",cursor:"pointer"}}>✕</button>
+                          </div>
+                        );
+                      })
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })
+        )}
+
+        {/* Проекты без клиента */}
+        {projects.filter(p=>!p.client_id).length>0&&(
+          <div style={{marginTop:8,background:"rgba(255,255,255,.03)",border:"1px solid rgba(255,255,255,.06)",borderRadius:12,padding:"12px 16px"}}>
+            <div style={{fontSize:12,fontWeight:700,color:"rgba(255,255,255,.25)",letterSpacing:".07em",textTransform:"uppercase",marginBottom:8}}>Без клиента</div>
+            {projects.filter(p=>!p.client_id).map(p=>{
+              const ps=tasksByProject[p.id]||{total:0,active:0};
+              return(
+                <div key={p.id} style={{display:"flex",alignItems:"center",gap:8,padding:"7px 0"}}>
+                  <span style={{fontSize:13}}>📁</span>
+                  <span style={{fontSize:13,color:"#d4d0f0"}}>{p.name}</span>
+                  {ps.active>0&&<span style={{fontSize:10,color:"#7dd3fc"}}>{ps.active} активных</span>}
+                  <button onClick={()=>removeProject(p.id)} style={{marginLeft:"auto",fontSize:11,color:"rgba(255,255,255,.15)",background:"none",border:"none",cursor:"pointer"}}>✕</button>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* Форма добавления */}
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
+        {/* Новый клиент */}
+        <div style={{background:"rgba(167,139,250,.07)",border:"1px solid rgba(167,139,250,.2)",borderRadius:12,padding:"14px"}}>
+          <div style={{fontSize:12,fontWeight:700,color:"#a78bfa",marginBottom:10}}>🏢 Новый клиент</div>
+          <Input value={newClientName} onChange={setNewClientName} placeholder="Название клиента" style={{marginBottom:8}}/>
+          <Btn onClick={addClient} disabled={loading||!newClientName.trim()} full gradient="linear-gradient(135deg,#a78bfa,#8b5cf6)">Добавить</Btn>
+        </div>
+        {/* Новый проект */}
+        <div style={{background:"rgba(125,211,252,.06)",border:"1px solid rgba(125,211,252,.18)",borderRadius:12,padding:"14px"}}>
+          <div style={{fontSize:12,fontWeight:700,color:"#7dd3fc",marginBottom:10}}>📁 Новый проект</div>
+          <Input value={newProjName} onChange={setNewProjName} placeholder="Название проекта" style={{marginBottom:8}}/>
+          <Select value={newProjClient} onChange={setNewProjClient} style={{marginBottom:8}}>
+            <option value="">Без клиента</option>
+            {clients.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}
+          </Select>
+          <Btn onClick={addProject} disabled={loading||!newProjName.trim()} full gradient="linear-gradient(135deg,#7dd3fc,#2AABEE)">Добавить</Btn>
+        </div>
+      </div>
     </div>
   );
 }
+
+// ── Main App ──────────────────────────────────────────────────────────────────
 
 function App(){
-  const [apiKey,setApiKey]=useState("");
-  const [showKey,setShowKey]=useState(true);
   const [tab,setTab]=useState("tasks");
   const [tasks,setTasks]=useState([]);
+  const [projects,setProjects]=useState([]);
   const [serverOk,setServerOk]=useState(null);
   const [lastSync,setLastSync]=useState(null);
   const [error,setError]=useState("");
   const [groupMode,setGroupMode]=useState("week");
-  const [selEmails,setSelEmails]=useState([1,2,3]);
-  const [emailLoading,setEmailLoading]=useState(false);
-  const [selTg,setSelTg]=useState([1,3,5]);
-  const [tgLoading,setTgLoading]=useState(false);
-  const [tgProgress,setTgProgress]=useState([]);
+  const [filterProject,setFilterProject]=useState("all"); // "all" | "none" | project_id
+  const [filterSource,setFilterSource]=useState("all");
   const pollRef=useRef(null);
 
-  const fetchFromServer=useCallback(async()=>{
+  const fetchAll=useCallback(async()=>{
     try{
-      const res=await fetch(`${SERVER}/tasks`);
-      if(!res.ok)throw new Error();
-      setTasks(await res.json());
-      setServerOk(true);
-      setLastSync(new Date());
+      const [t,p]=await Promise.all([api.get("/tasks"),api.get("/projects")]);
+      setTasks(t);setProjects(p);
+      setServerOk(true);setLastSync(new Date());
     }catch{setServerOk(false);}
   },[]);
 
   useEffect(()=>{
-    fetchFromServer();
-    pollRef.current=setInterval(fetchFromServer,POLL_INTERVAL);
+    fetchAll();
+    pollRef.current=setInterval(fetchAll,POLL_INTERVAL);
     return()=>clearInterval(pollRef.current);
-  },[fetchFromServer]);
+  },[fetchAll]);
 
   const toggleDone=async(id)=>{
     const task=tasks.find(t=>t.id===id);
     if(!task)return;
     try{
-      if(!task.done)await fetch(`${SERVER}/tasks/${id}/done`,{method:"PATCH"});
+      if(!task.done)await api.patch(`/tasks/${id}/done`);
       else{setTasks(prev=>prev.map(t=>t.id===id?{...t,done:false}:t));return;}
-      fetchFromServer();
+      fetchAll();
     }catch{setError("Сервер недоступен");}
   };
 
   const deleteTask=async(id)=>{
-    try{await fetch(`${SERVER}/tasks/${id}`,{method:"DELETE"});fetchFromServer();}
+    try{await api.del(`/tasks/${id}`);fetchAll();}
     catch{setError("Сервер недоступен");}
   };
 
-  const postToServer=async(task)=>{
-    const res=await fetch(`${SERVER}/tasks`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(task)});
-    if(!res.ok)throw new Error("Ошибка сервера");
-    return res.json();
+  const changeProject=async(taskId,projectId)=>{
+    try{await api.patch(`/tasks/${taskId}/project`,{project_id:projectId});fetchAll();}
+    catch{setError("Сервер недоступен");}
   };
 
-  const handleEmails=useCallback(async()=>{
-    if(!apiKey.trim()){setError("Введите API-ключ");return;}
-    setError("");setEmailLoading(true);
-    try{
-      const extracted=await extractTasksFromEmails(DEMO_EMAILS.filter(e=>selEmails.includes(e.id)),apiKey.trim());
-      for(const t of extracted)await postToServer(t);
-      await fetchFromServer();setTab("tasks");
-    }catch(e){setError(e.message);}finally{setEmailLoading(false);}
-  },[apiKey,selEmails]);
+  // Фильтрация
+  const applyFilters=(list)=>{
+    let r=list;
+    if(filterProject==="none")r=r.filter(t=>!t.project_id);
+    else if(filterProject!=="all")r=r.filter(t=>t.project_id===parseInt(filterProject));
+    if(filterSource!=="all")r=r.filter(t=>t.source===filterSource);
+    return r;
+  };
 
-  const handleTelegram=useCallback(async()=>{
-    if(!apiKey.trim()){setError("Введите API-ключ");return;}
-    setError("");setTgLoading(true);
-    const msgs=DEMO_TG.filter(m=>selTg.includes(m.id));
-    setTgProgress(msgs.map(m=>({msgId:m.id,status:"pending"})));
-    try{
-      for(const msg of msgs){
-        const result=await analyzeTgMessage(msg,apiKey.trim());
-        setTgProgress(prev=>prev.map(p=>p.msgId===msg.id?{...p,status:result.is_task?"task":"skip"}:p));
-        if(result.is_task){const{is_task,...td}=result;await postToServer(td);}
-      }
-      await fetchFromServer();setTab("tasks");
-    }catch(e){setError(e.message);}finally{setTgLoading(false);}
-  },[apiKey,selTg]);
+  const pending=applyFilters(tasks.filter(t=>!t.done));
+  const done=applyFilters(tasks.filter(t=>t.done));
+  const doneGroups=groupBy(done,groupMode);
+  const allPending=tasks.filter(t=>!t.done);
 
-  const pending=tasks.filter(t=>!t.done);
-  const done=tasks.filter(t=>t.done);
-  const doneGroups=groupTasks(done,groupMode);
+  const TABS=[
+    {id:"tasks",label:`✦ Активные${allPending.length?` (${allPending.length})`:""}`,ac:"#f0ede8",bg:"rgba(255,255,255,.08)"},
+    {id:"done",label:`✓ Выполнено${tasks.filter(t=>t.done).length?` (${tasks.filter(t=>t.done).length})`:""}`,ac:"#4caf8a",bg:"rgba(76,175,138,.14)"},
+    {id:"projects",label:"📁 Проекты",ac:"#a78bfa",bg:"rgba(167,139,250,.15)"},
+    {id:"email",label:"✉️ Email",ac:"#c4b5fd",bg:"rgba(139,92,246,.16)"},
+    {id:"telegram",label:"✈️ Telegram",ac:"#7dd3fc",bg:"rgba(43,171,238,.16)"},
+  ];
+
+  const FilterBar=()=>(
+    <div style={{display:"flex",gap:8,marginBottom:14,flexWrap:"wrap",alignItems:"center"}}>
+      <span style={{fontSize:11,color:"rgba(255,255,255,.25)"}}>Фильтр:</span>
+      <select value={filterProject} onChange={e=>setFilterProject(e.target.value)} style={{fontSize:11,background:"rgba(255,255,255,.05)",border:"1px solid rgba(255,255,255,.08)",borderRadius:6,padding:"4px 8px",color:"rgba(255,255,255,.5)"}}>
+        <option value="all">Все проекты</option>
+        <option value="none">Без проекта</option>
+        {projects.map(p=><option key={p.id} value={p.id}>{p.client_name?`${p.client_name} / `:""}{p.name}</option>)}
+      </select>
+      <select value={filterSource} onChange={e=>setFilterSource(e.target.value)} style={{fontSize:11,background:"rgba(255,255,255,.05)",border:"1px solid rgba(255,255,255,.08)",borderRadius:6,padding:"4px 8px",color:"rgba(255,255,255,.5)"}}>
+        <option value="all">Все источники</option>
+        <option value="telegram">Telegram</option>
+        <option value="email">Email</option>
+      </select>
+      {(filterProject!=="all"||filterSource!=="all")&&(
+        <button onClick={()=>{setFilterProject("all");setFilterSource("all");}} style={{fontSize:11,color:"rgba(255,255,255,.3)",background:"none",border:"none",cursor:"pointer"}}>✕ сбросить</button>
+      )}
+    </div>
+  );
 
   return(
-    <div style={{minHeight:"100vh",background:"linear-gradient(140deg,#0d0d12 0%,#13111e 55%,#0d1117 100%)",padding:"28px 18px",display:"flex",justifyContent:"center"}}>
-      <div style={{width:"100%",maxWidth:760}}>
+    <div style={{minHeight:"100vh",background:"linear-gradient(140deg,#0d0d12 0%,#13111e 55%,#0d1117 100%)",padding:"24px 16px",display:"flex",justifyContent:"center"}}>
+      <div style={{width:"100%",maxWidth:780}}>
 
         {/* HEADER */}
-        <div style={{marginBottom:22,animation:"fadeUp .4s ease both"}}>
-          <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:4}}>
-            <div style={{width:34,height:34,borderRadius:9,background:"linear-gradient(135deg,#8b5cf6,#2AABEE)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:17}}>✦</div>
-            <h1 style={{fontFamily:"'Syne',sans-serif",fontWeight:800,fontSize:21,color:"#f0ede8",letterSpacing:"-0.03em"}}>Task Dashboard</h1>
-            <span style={{fontSize:10,fontWeight:700,letterSpacing:"0.1em",color:"#8b5cf6",background:"rgba(139,92,246,.15)",border:"1px solid rgba(139,92,246,.3)",borderRadius:4,padding:"2px 7px"}}>CLAUDE</span>
-            <div style={{marginLeft:"auto",display:"flex",alignItems:"center",gap:5}}>
-              <div style={{width:7,height:7,borderRadius:"50%",background:serverOk===null?"#f0a500":serverOk?"#4caf8a":"#ff4d4d",animation:serverOk?"blink 2s infinite":"none"}}/>
-              <span style={{fontSize:11,color:"rgba(255,255,255,.28)"}}>
-                {serverOk===null?"подключение…":serverOk?`онлайн · ${lastSync?.toLocaleTimeString("ru-RU",{hour:"2-digit",minute:"2-digit",second:"2-digit"})}`:"офлайн"}
-              </span>
-            </div>
+        <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:20,animation:"fadeUp .4s ease both"}}>
+          <div style={{width:34,height:34,borderRadius:9,background:"linear-gradient(135deg,#8b5cf6,#2AABEE)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:17}}>✦</div>
+          <h1 style={{fontFamily:"'Syne',sans-serif",fontWeight:800,fontSize:21,color:"#f0ede8",letterSpacing:"-.03em"}}>Task Dashboard</h1>
+          <span style={{fontSize:10,fontWeight:700,letterSpacing:".1em",color:"#8b5cf6",background:"rgba(139,92,246,.15)",border:"1px solid rgba(139,92,246,.3)",borderRadius:4,padding:"2px 7px"}}>CLAUDE</span>
+          <div style={{marginLeft:"auto",display:"flex",alignItems:"center",gap:5}}>
+            <div style={{width:7,height:7,borderRadius:"50%",background:serverOk===null?"#f0a500":serverOk?"#4caf8a":"#ff4d4d",animation:serverOk?"blink 2s infinite":"none"}}/>
+            <span style={{fontSize:11,color:"rgba(255,255,255,.25)"}}>
+              {serverOk===null?"подключение…":serverOk?`онлайн · ${lastSync?.toLocaleTimeString("ru-RU",{hour:"2-digit",minute:"2-digit",second:"2-digit"})}`:"офлайн"}
+            </span>
           </div>
-        </div>
-
-        {/* API KEY */}
-        <div style={{background:"rgba(255,255,255,.04)",border:"1px solid rgba(255,255,255,.08)",borderRadius:13,padding:"13px 17px",marginBottom:14}}>
-          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",cursor:"pointer"}} onClick={()=>setShowKey(v=>!v)}>
-            <div style={{display:"flex",alignItems:"center",gap:8}}>
-              <span>🔑</span>
-              <span style={{fontSize:13,fontWeight:600,color:apiKey?"#4caf8a":"rgba(255,255,255,.5)"}}>{apiKey?"API-ключ задан":"Anthropic API-ключ"}</span>
-            </div>
-            <span style={{fontSize:11,color:"rgba(255,255,255,.18)"}}>{showKey?"▲":"▼"}</span>
-          </div>
-          {showKey&&<input type="password" value={apiKey} onChange={e=>setApiKey(e.target.value)} placeholder="sk-ant-api03-..." style={{marginTop:10,width:"100%",background:"rgba(255,255,255,.05)",border:"1px solid rgba(255,255,255,.09)",borderRadius:8,padding:"9px 13px",fontSize:13,color:"#f0ede8",outline:"none",fontFamily:"monospace"}}/>}
         </div>
 
         {/* TABS */}
-        <div style={{display:"flex",gap:3,background:"rgba(255,255,255,.04)",border:"1px solid rgba(255,255,255,.08)",borderRadius:12,padding:3,marginBottom:14}}>
-          {[
-            {id:"tasks",label:`✦ Активные${pending.length?` (${pending.length})`:""}`,active:"#f0ede8",bg:"rgba(255,255,255,.09)"},
-            {id:"done",label:`✓ Выполнено${done.length?` (${done.length})`:""}`,active:"#4caf8a",bg:"rgba(76,175,138,.15)"},
-            {id:"email",label:"✉️ Email",active:"#c4b5fd",bg:"rgba(139,92,246,.18)"},
-            {id:"telegram",label:"✈️ Telegram",active:"#7dd3fc",bg:"rgba(43,171,238,.18)"},
-          ].map(t=>(
-            <button key={t.id} onClick={()=>setTab(t.id)} style={{flex:1,padding:"9px 6px",borderRadius:9,border:"none",background:tab===t.id?t.bg:"transparent",color:tab===t.id?t.active:"rgba(255,255,255,.32)",fontSize:12,fontWeight:600,cursor:"pointer",transition:"all .18s",fontFamily:"'DM Sans',sans-serif"}}>{t.label}</button>
+        <div style={{display:"flex",gap:3,background:"rgba(255,255,255,.04)",border:"1px solid rgba(255,255,255,.07)",borderRadius:12,padding:3,marginBottom:14,flexWrap:"wrap"}}>
+          {TABS.map(t=>(
+            <button key={t.id} onClick={()=>setTab(t.id)} style={{flex:1,minWidth:60,padding:"8px 6px",borderRadius:9,border:"none",background:tab===t.id?t.bg:"transparent",color:tab===t.id?t.ac:"rgba(255,255,255,.28)",fontSize:11,fontWeight:600,cursor:"pointer",transition:"all .18s",fontFamily:"'DM Sans',sans-serif",whiteSpace:"nowrap"}}>{t.label}</button>
           ))}
         </div>
 
-        {/* АКТИВНЫЕ */}
+        {/* СТАТИСТИКА (только на главных вкладках) */}
+        {(tab==="tasks"||tab==="done")&&(
+          <div style={{display:"flex",gap:8,marginBottom:16,flexWrap:"wrap"}}>
+            {[
+              {label:"Всего",value:tasks.length,color:"#8b5cf6"},
+              {label:"Активных",value:allPending.length,color:"#f0a500"},
+              {label:"Выполнено",value:tasks.filter(t=>t.done).length,color:"#4caf8a"},
+              {label:"Email",value:tasks.filter(t=>t.source==="email").length,color:"#c4b5fd"},
+              {label:"Telegram",value:tasks.filter(t=>t.source==="telegram").length,color:"#7dd3fc"},
+              {label:"Без проекта",value:allPending.filter(t=>!t.project_id).length,color:"#f0a500"},
+            ].map(s=>(
+              <div key={s.label} style={{flex:1,minWidth:65,background:"rgba(255,255,255,.04)",border:"1px solid rgba(255,255,255,.06)",borderRadius:10,padding:"8px 10px",textAlign:"center",cursor:"pointer"}}
+                onClick={()=>{
+                  if(s.label==="Email"){setFilterSource("email");setTab("tasks");}
+                  else if(s.label==="Telegram"){setFilterSource("telegram");setTab("tasks");}
+                  else if(s.label==="Без проекта"){setFilterProject("none");setTab("tasks");}
+                  else{setFilterSource("all");setFilterProject("all");}
+                }}>
+                <div style={{fontSize:18,fontFamily:"'Syne',sans-serif",fontWeight:800,color:s.color}}>{s.value}</div>
+                <div style={{fontSize:10,color:"rgba(255,255,255,.22)",marginTop:1}}>{s.label}</div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* АКТИВНЫЕ ЗАДАЧИ */}
         {tab==="tasks"&&(
           <div style={{animation:"fadeUp .3s ease both"}}>
-            <div style={{display:"flex",gap:8,marginBottom:18,flexWrap:"wrap"}}>
-              {[
-                {label:"Всего",value:tasks.length,color:"#8b5cf6"},
-                {label:"Активных",value:pending.length,color:"#f0a500"},
-                {label:"Выполнено",value:done.length,color:"#4caf8a"},
-                {label:"Email",value:tasks.filter(t=>t.source==="email").length,color:"#8b5cf6"},
-                {label:"Telegram",value:tasks.filter(t=>t.source==="telegram").length,color:"#2AABEE"},
-              ].map(s=>(
-                <div key={s.label} style={{flex:1,minWidth:70,background:"rgba(255,255,255,.04)",border:"1px solid rgba(255,255,255,.07)",borderRadius:10,padding:"9px 12px",textAlign:"center"}}>
-                  <div style={{fontSize:20,fontFamily:"'Syne',sans-serif",fontWeight:800,color:s.color}}>{s.value}</div>
-                  <div style={{fontSize:10,color:"rgba(255,255,255,.26)",marginTop:1}}>{s.label}</div>
-                </div>
-              ))}
-            </div>
+            <FilterBar/>
             {pending.length===0?(
-              <div style={{textAlign:"center",padding:"56px 0",color:"rgba(255,255,255,.2)"}}>
-                <div style={{fontSize:30,marginBottom:10}}>🎉</div>
+              <div style={{textAlign:"center",padding:"50px 0",color:"rgba(255,255,255,.18)"}}>
+                <div style={{fontSize:28,marginBottom:8}}>🎉</div>
                 <p style={{fontSize:14}}>{serverOk?"Все задачи выполнены!":"Подключение к серверу..."}</p>
               </div>
             ):(
-              pending.map(t=><TaskCard key={t.id} task={t} onToggle={toggleDone} onDelete={deleteTask}/>)
+              pending.map(t=><TaskCard key={t.id} task={t} projects={projects} onToggle={toggleDone} onDelete={deleteTask} onProjectChange={changeProject}/>)
             )}
           </div>
         )}
@@ -310,50 +475,58 @@ function App(){
         {/* ВЫПОЛНЕННЫЕ */}
         {tab==="done"&&(
           <div style={{animation:"fadeUp .3s ease both"}}>
+            <FilterBar/>
             {done.length===0?(
-              <div style={{textAlign:"center",padding:"56px 0",color:"rgba(255,255,255,.2)"}}>
-                <div style={{fontSize:30,marginBottom:10}}>📭</div>
-                <p style={{fontSize:14}}>Выполненных задач пока нет</p>
+              <div style={{textAlign:"center",padding:"50px 0",color:"rgba(255,255,255,.18)"}}>
+                <div style={{fontSize:28,marginBottom:8}}>📭</div>
+                <p style={{fontSize:14}}>Выполненных задач нет</p>
               </div>
             ):(
               <>
-                <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:18}}>
-                  <span style={{fontSize:12,color:"rgba(255,255,255,.3)"}}>Группировать:</span>
-                  <div style={{display:"flex",gap:3,background:"rgba(255,255,255,.04)",border:"1px solid rgba(255,255,255,.08)",borderRadius:8,padding:3}}>
+                <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:14}}>
+                  <span style={{fontSize:12,color:"rgba(255,255,255,.25)"}}>Группировать:</span>
+                  <div style={{display:"flex",gap:3,background:"rgba(255,255,255,.04)",border:"1px solid rgba(255,255,255,.07)",borderRadius:8,padding:3}}>
                     {[{id:"week",label:"По неделям"},{id:"month",label:"По месяцам"}].map(m=>(
-                      <button key={m.id} onClick={()=>setGroupMode(m.id)} style={{padding:"6px 14px",borderRadius:6,border:"none",background:groupMode===m.id?"rgba(255,255,255,.1)":"transparent",color:groupMode===m.id?"#f0ede8":"rgba(255,255,255,.3)",fontSize:12,fontWeight:600,cursor:"pointer",transition:"all .15s",fontFamily:"'DM Sans',sans-serif"}}>{m.label}</button>
+                      <button key={m.id} onClick={()=>setGroupMode(m.id)} style={{padding:"5px 12px",borderRadius:6,border:"none",background:groupMode===m.id?"rgba(255,255,255,.09)":"transparent",color:groupMode===m.id?"#f0ede8":"rgba(255,255,255,.28)",fontSize:11,fontWeight:600,cursor:"pointer",fontFamily:"'DM Sans',sans-serif"}}>{m.label}</button>
                     ))}
                   </div>
-                  <span style={{marginLeft:"auto",fontSize:11,color:"rgba(255,255,255,.2)"}}>{done.length} задач</span>
+                  <span style={{marginLeft:"auto",fontSize:11,color:"rgba(255,255,255,.18)"}}>{done.length} задач</span>
                 </div>
                 {Object.entries(doneGroups).map(([label,group],i)=>(
-                  <GroupSection key={label} label={label} tasks={group} onToggle={toggleDone} onDelete={deleteTask} defaultOpen={i===0}/>
+                  <GroupSection key={label} label={label} tasks={group} projects={projects} onToggle={toggleDone} onDelete={deleteTask} onProjectChange={changeProject} defaultOpen={i===0}/>
                 ))}
               </>
             )}
           </div>
         )}
 
+        {/* ПРОЕКТЫ */}
+        {tab==="projects"&&(
+          <ProjectsTab tasks={tasks} onRefresh={fetchAll}/>
+        )}
+
         {/* EMAIL */}
         {tab==="email"&&(
           <div style={{animation:"fadeUp .3s ease both"}}>
             {tasks.filter(t=>t.source==="email").length===0?(
-              <div style={{textAlign:"center",padding:"56px 0",color:"rgba(255,255,255,.2)"}}>
-                <div style={{fontSize:30,marginBottom:10}}>📭</div>
+              <div style={{textAlign:"center",padding:"50px 0",color:"rgba(255,255,255,.18)"}}>
+                <div style={{fontSize:28,marginBottom:8}}>📭</div>
                 <p style={{fontSize:14}}>Задач из Email пока нет</p>
               </div>
             ):(
               <>
-                <p style={{fontSize:11,fontWeight:700,letterSpacing:"0.08em",color:"rgba(255,255,255,.22)",textTransform:"uppercase",marginBottom:9}}>
-                  Активные · {tasks.filter(t=>t.source==="email"&&!t.done).length}
-                </p>
-                {tasks.filter(t=>t.source==="email"&&!t.done).map(t=><TaskCard key={t.id} task={t} onToggle={toggleDone} onDelete={deleteTask}/>)}
-                {tasks.filter(t=>t.source==="email"&&t.done).length>0&&<>
-                  <p style={{fontSize:11,fontWeight:700,letterSpacing:"0.08em",color:"rgba(255,255,255,.13)",textTransform:"uppercase",margin:"18px 0 9px"}}>
-                    Выполнено · {tasks.filter(t=>t.source==="email"&&t.done).length}
-                  </p>
-                  {tasks.filter(t=>t.source==="email"&&t.done).map(t=><TaskCard key={t.id} task={t} onToggle={toggleDone} onDelete={deleteTask}/>)}
-                </>}
+                {tasks.filter(t=>t.source==="email"&&!t.done).length>0&&(
+                  <>
+                    <p style={{fontSize:11,fontWeight:700,letterSpacing:".08em",color:"rgba(255,255,255,.2)",textTransform:"uppercase",marginBottom:9}}>Активные · {tasks.filter(t=>t.source==="email"&&!t.done).length}</p>
+                    {tasks.filter(t=>t.source==="email"&&!t.done).map(t=><TaskCard key={t.id} task={t} projects={projects} onToggle={toggleDone} onDelete={deleteTask} onProjectChange={changeProject}/>)}
+                  </>
+                )}
+                {tasks.filter(t=>t.source==="email"&&t.done).length>0&&(
+                  <>
+                    <p style={{fontSize:11,fontWeight:700,letterSpacing:".08em",color:"rgba(255,255,255,.13)",textTransform:"uppercase",margin:"18px 0 9px"}}>Выполнено · {tasks.filter(t=>t.source==="email"&&t.done).length}</p>
+                    {tasks.filter(t=>t.source==="email"&&t.done).map(t=><TaskCard key={t.id} task={t} projects={projects} onToggle={toggleDone} onDelete={deleteTask} onProjectChange={changeProject}/>)}
+                  </>
+                )}
               </>
             )}
           </div>
@@ -363,23 +536,25 @@ function App(){
         {tab==="telegram"&&(
           <div style={{animation:"fadeUp .3s ease both"}}>
             {tasks.filter(t=>t.source==="telegram").length===0?(
-              <div style={{textAlign:"center",padding:"56px 0",color:"rgba(255,255,255,.2)"}}>
-                <div style={{fontSize:30,marginBottom:10}}>✈️</div>
+              <div style={{textAlign:"center",padding:"50px 0",color:"rgba(255,255,255,.18)"}}>
+                <div style={{fontSize:28,marginBottom:8}}>✈️</div>
                 <p style={{fontSize:14}}>Задач из Telegram пока нет</p>
-                <p style={{fontSize:12,marginTop:6,color:"rgba(255,255,255,.12)"}}>Напишите боту — задачи появятся здесь</p>
+                <p style={{fontSize:12,marginTop:6,color:"rgba(255,255,255,.1)"}}>Напишите боту — задачи появятся здесь</p>
               </div>
             ):(
               <>
-                <p style={{fontSize:11,fontWeight:700,letterSpacing:"0.08em",color:"rgba(255,255,255,.22)",textTransform:"uppercase",marginBottom:9}}>
-                  Активные · {tasks.filter(t=>t.source==="telegram"&&!t.done).length}
-                </p>
-                {tasks.filter(t=>t.source==="telegram"&&!t.done).map(t=><TaskCard key={t.id} task={t} onToggle={toggleDone} onDelete={deleteTask}/>)}
-                {tasks.filter(t=>t.source==="telegram"&&t.done).length>0&&<>
-                  <p style={{fontSize:11,fontWeight:700,letterSpacing:"0.08em",color:"rgba(255,255,255,.13)",textTransform:"uppercase",margin:"18px 0 9px"}}>
-                    Выполнено · {tasks.filter(t=>t.source==="telegram"&&t.done).length}
-                  </p>
-                  {tasks.filter(t=>t.source==="telegram"&&t.done).map(t=><TaskCard key={t.id} task={t} onToggle={toggleDone} onDelete={deleteTask}/>)}
-                </>}
+                {tasks.filter(t=>t.source==="telegram"&&!t.done).length>0&&(
+                  <>
+                    <p style={{fontSize:11,fontWeight:700,letterSpacing:".08em",color:"rgba(255,255,255,.2)",textTransform:"uppercase",marginBottom:9}}>Активные · {tasks.filter(t=>t.source==="telegram"&&!t.done).length}</p>
+                    {tasks.filter(t=>t.source==="telegram"&&!t.done).map(t=><TaskCard key={t.id} task={t} projects={projects} onToggle={toggleDone} onDelete={deleteTask} onProjectChange={changeProject}/>)}
+                  </>
+                )}
+                {tasks.filter(t=>t.source==="telegram"&&t.done).length>0&&(
+                  <>
+                    <p style={{fontSize:11,fontWeight:700,letterSpacing:".08em",color:"rgba(255,255,255,.13)",textTransform:"uppercase",margin:"18px 0 9px"}}>Выполнено · {tasks.filter(t=>t.source==="telegram"&&t.done).length}</p>
+                    {tasks.filter(t=>t.source==="telegram"&&t.done).map(t=><TaskCard key={t.id} task={t} projects={projects} onToggle={toggleDone} onDelete={deleteTask} onProjectChange={changeProject}/>)}
+                  </>
+                )}
               </>
             )}
           </div>
