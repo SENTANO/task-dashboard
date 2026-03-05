@@ -319,6 +319,156 @@ function ProjectsTab({tasks,onRefresh}){
   );
 }
 
+
+// ── Экономика ─────────────────────────────────────────────────────────────────
+
+function EconomicsTab({economics,filter,setFilter,form,setForm,adding,setAdding,onRefresh}){
+  const STATUS={unpaid:{label:"❌ Не оплачено",color:"#ff4d4d",bg:"rgba(255,77,77,.12)",border:"rgba(255,77,77,.3)"},
+                invoiced:{label:"🧾 Выставлено",color:"#f0a500",bg:"rgba(240,165,0,.12)",border:"rgba(240,165,0,.3)"},
+                paid:{label:"✅ Оплачено",color:"#4caf8a",bg:"rgba(76,175,138,.12)",border:"rgba(76,175,138,.3)"}};
+
+  const clients=[...new Set(economics.map(e=>e.client_name))].sort();
+
+  const getPeriodStart=(p)=>{
+    const now=new Date();
+    if(p==="week"){const d=new Date(now);d.setDate(d.getDate()-7);return d;}
+    if(p==="month"){return new Date(now.getFullYear(),now.getMonth(),1);}
+    return null;
+  };
+
+  const filtered=economics.filter(e=>{
+    if(filter.client!=="all"&&e.client_name!==filter.client)return false;
+    if(filter.status!=="all"&&e.status!==filter.status)return false;
+    if(filter.period!=="all"){
+      const start=getPeriodStart(filter.period);
+      if(start&&new Date(e.request_date)<start)return false;
+    }
+    return true;
+  });
+
+  const unpaidCount=economics.filter(e=>e.status==="unpaid").length;
+  const invoicedCount=economics.filter(e=>e.status==="invoiced").length;
+  const paidCount=economics.filter(e=>e.status==="paid").length;
+  const paidAmount=economics.filter(e=>e.status==="paid"&&e.amount).reduce((s,e)=>s+parseFloat(e.amount||0),0);
+  const unpaidAmount=economics.filter(e=>e.status!=="paid"&&e.amount).reduce((s,e)=>s+parseFloat(e.amount||0),0);
+
+  const updateStatus=async(id,status)=>{
+    await api.patch(`/economics/${id}/status`,{status});
+    onRefresh();
+  };
+
+  const deleteRec=async(id)=>{
+    await api.del(`/economics/${id}`);
+    onRefresh();
+  };
+
+  const addRecord=async()=>{
+    if(!form.client_name.trim()||!form.service.trim())return;
+    setAdding(true);
+    const today=new Date().toISOString().split("T")[0];
+    await api.post("/economics",{...form,request_date:form.request_date||today,amount:form.amount||null});
+    setForm({client_name:"",service:"",request_date:"",amount:"",status:"unpaid"});
+    onRefresh();setAdding(false);
+  };
+
+  return(
+    <div style={{animation:"fadeUp .3s ease both"}}>
+      {/* KPI */}
+      <div style={{display:"flex",gap:8,marginBottom:16,flexWrap:"wrap"}}>
+        {[
+          {label:"Не оплачено",value:unpaidCount,color:"#ff4d4d",sub:unpaidAmount?`${unpaidAmount.toLocaleString("ru-RU")} ₽`:""},
+          {label:"Выставлено",value:invoicedCount,color:"#f0a500",sub:""},
+          {label:"Оплачено",value:paidCount,color:"#4caf8a",sub:paidAmount?`${paidAmount.toLocaleString("ru-RU")} ₽`:""},
+          {label:"Клиентов",value:clients.length,color:"#fbbf24",sub:""},
+        ].map(s=>(
+          <div key={s.label} onClick={()=>s.label==="Не оплачено"?setFilter(f=>({...f,status:"unpaid"})):s.label==="Оплачено"?setFilter(f=>({...f,status:"paid"})):null}
+            style={{flex:1,minWidth:70,background:"rgba(255,255,255,.04)",border:"1px solid rgba(255,255,255,.06)",borderRadius:10,padding:"9px 12px",textAlign:"center",cursor:s.label==="Не оплачено"||s.label==="Оплачено"?"pointer":"default"}}>
+            <div style={{fontSize:20,fontFamily:"'Syne',sans-serif",fontWeight:800,color:s.color}}>{s.value}</div>
+            <div style={{fontSize:10,color:"rgba(255,255,255,.22)",marginTop:1}}>{s.label}</div>
+            {s.sub&&<div style={{fontSize:9,color:s.color,marginTop:1,opacity:.7}}>{s.sub}</div>}
+          </div>
+        ))}
+      </div>
+
+      {/* Фильтры */}
+      <div style={{display:"flex",gap:8,marginBottom:14,flexWrap:"wrap",alignItems:"center"}}>
+        <select value={filter.client} onChange={e=>setFilter(f=>({...f,client:e.target.value}))} style={{fontSize:11,background:"rgba(255,255,255,.05)",border:"1px solid rgba(255,255,255,.08)",borderRadius:6,padding:"4px 8px",color:"rgba(255,255,255,.5)"}}>
+          <option value="all">Все клиенты</option>
+          {clients.map(c=><option key={c} value={c}>{c}</option>)}
+        </select>
+        <select value={filter.status} onChange={e=>setFilter(f=>({...f,status:e.target.value}))} style={{fontSize:11,background:"rgba(255,255,255,.05)",border:"1px solid rgba(255,255,255,.08)",borderRadius:6,padding:"4px 8px",color:"rgba(255,255,255,.5)"}}>
+          <option value="all">Все статусы</option>
+          <option value="unpaid">❌ Не оплачено</option>
+          <option value="invoiced">🧾 Выставлено</option>
+          <option value="paid">✅ Оплачено</option>
+        </select>
+        <select value={filter.period} onChange={e=>setFilter(f=>({...f,period:e.target.value}))} style={{fontSize:11,background:"rgba(255,255,255,.05)",border:"1px solid rgba(255,255,255,.08)",borderRadius:6,padding:"4px 8px",color:"rgba(255,255,255,.5)"}}>
+          <option value="all">Всё время</option>
+          <option value="week">Эта неделя</option>
+          <option value="month">Этот месяц</option>
+        </select>
+        {(filter.client!=="all"||filter.status!=="all"||filter.period!=="all")&&(
+          <button onClick={()=>setFilter({client:"all",status:"all",period:"all"})} style={{fontSize:11,color:"rgba(255,255,255,.3)",background:"none",border:"none",cursor:"pointer"}}>✕ сбросить</button>
+        )}
+      </div>
+
+      {/* Таблица / карточки */}
+      {filtered.length===0?(
+        <div style={{textAlign:"center",padding:"40px 0",color:"rgba(255,255,255,.18)"}}>
+          <div style={{fontSize:26,marginBottom:8}}>💼</div>
+          <p style={{fontSize:13}}>Записей нет</p>
+          <p style={{fontSize:11,marginTop:4,color:"rgba(255,255,255,.1)"}}>Отправьте боту сообщение с #econ</p>
+        </div>
+      ):(
+        filtered.map(e=>{
+          const st=STATUS[e.status]||STATUS.unpaid;
+          return(
+            <div key={e.id} style={{background:"rgba(255,255,255,.04)",border:"1px solid rgba(255,255,255,.08)",borderRadius:12,padding:"13px 16px",marginBottom:8}}>
+              <div style={{display:"flex",gap:8,alignItems:"flex-start"}}>
+                <div style={{flex:1,minWidth:0}}>
+                  <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:5}}>
+                    <span style={{fontSize:11,fontWeight:700,color:"#fbbf24",background:"rgba(251,191,36,.1)",border:"1px solid rgba(251,191,36,.25)",borderRadius:4,padding:"1px 7px"}}>👤 {e.client_name}</span>
+                    <span style={{fontSize:10,fontWeight:700,color:st.color,background:st.bg,border:`1px solid ${st.border}`,borderRadius:4,padding:"1px 6px"}}>{st.label}</span>
+                    {e.amount&&<span style={{fontSize:10,color:"rgba(255,255,255,.4)",background:"rgba(255,255,255,.05)",borderRadius:4,padding:"1px 6px"}}>💰 {parseFloat(e.amount).toLocaleString("ru-RU")}</span>}
+                  </div>
+                  <div style={{fontWeight:600,fontSize:13,color:"#f0ede8",marginBottom:3}}>{e.service}</div>
+                  <div style={{fontSize:11,color:"rgba(255,255,255,.25)"}}>📅 {new Date(e.request_date).toLocaleDateString("ru-RU",{day:"2-digit",month:"long",year:"numeric"})}</div>
+                </div>
+                {/* Кнопки статуса */}
+                <div style={{display:"flex",flexDirection:"column",gap:4,flexShrink:0}}>
+                  {e.status!=="paid"&&<button onClick={()=>updateStatus(e.id,"paid")} style={{fontSize:10,padding:"3px 8px",borderRadius:5,border:"1px solid rgba(76,175,138,.3)",background:"rgba(76,175,138,.1)",color:"#4caf8a",cursor:"pointer"}}>✅ Оплачено</button>}
+                  {e.status!=="invoiced"&&<button onClick={()=>updateStatus(e.id,"invoiced")} style={{fontSize:10,padding:"3px 8px",borderRadius:5,border:"1px solid rgba(240,165,0,.3)",background:"rgba(240,165,0,.1)",color:"#f0a500",cursor:"pointer"}}>🧾 Выставлено</button>}
+                  {e.status!=="unpaid"&&<button onClick={()=>updateStatus(e.id,"unpaid")} style={{fontSize:10,padding:"3px 8px",borderRadius:5,border:"1px solid rgba(255,77,77,.25)",background:"rgba(255,77,77,.08)",color:"#ff6b6b",cursor:"pointer"}}>❌ Не оплачено</button>}
+                  <button onClick={()=>deleteRec(e.id)} style={{fontSize:10,padding:"3px 8px",borderRadius:5,border:"none",background:"none",color:"rgba(255,255,255,.15)",cursor:"pointer"}}>✕</button>
+                </div>
+              </div>
+            </div>
+          );
+        })
+      )}
+
+      {/* Форма добавления */}
+      <div style={{marginTop:16,background:"rgba(251,191,36,.06)",border:"1px solid rgba(251,191,36,.18)",borderRadius:12,padding:"14px"}}>
+        <div style={{fontSize:12,fontWeight:700,color:"#fbbf24",marginBottom:10}}>💼 Добавить запись вручную</div>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:8}}>
+          <Input value={form.client_name} onChange={v=>setForm(f=>({...f,client_name:v}))} placeholder="Клиент *"/>
+          <Input value={form.service} onChange={v=>setForm(f=>({...f,service:v}))} placeholder="Услуга *"/>
+          <Input value={form.request_date} onChange={v=>setForm(f=>({...f,request_date:v}))} placeholder="Дата (ГГГГ-ММ-ДД)" type="date"/>
+          <Input value={form.amount} onChange={v=>setForm(f=>({...f,amount:v}))} placeholder="Сумма" type="number"/>
+        </div>
+        <div style={{display:"flex",gap:8,alignItems:"center"}}>
+          <select value={form.status} onChange={e=>setForm(f=>({...f,status:e.target.value}))} style={{flex:1,background:"rgba(255,255,255,.05)",border:"1px solid rgba(255,255,255,.09)",borderRadius:8,padding:"9px 13px",fontSize:13,color:"#f0ede8"}}>
+            <option value="unpaid">❌ Не оплачено</option>
+            <option value="invoiced">🧾 Выставлено</option>
+            <option value="paid">✅ Оплачено</option>
+          </select>
+          <Btn onClick={addRecord} disabled={adding||!form.client_name.trim()||!form.service.trim()} gradient="linear-gradient(135deg,#fbbf24,#f59e0b)">{adding?"...":"Добавить"}</Btn>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Main App ──────────────────────────────────────────────────────────────────
 
 function App(){
@@ -331,12 +481,16 @@ function App(){
   const [groupMode,setGroupMode]=useState("week");
   const [filterProject,setFilterProject]=useState("all"); // "all" | "none" | project_id
   const [filterSource,setFilterSource]=useState("all");
+  const [economics,setEconomics]=useState([]);
+  const [econFilter,setEconFilter]=useState({client:"all",status:"all",period:"all"});
+  const [econForm,setEconForm]=useState({client_name:"",service:"",request_date:"",amount:"",status:"unpaid"});
+  const [econAdding,setEconAdding]=useState(false);
   const pollRef=useRef(null);
 
   const fetchAll=useCallback(async()=>{
     try{
-      const [t,p]=await Promise.all([api.get("/tasks"),api.get("/projects")]);
-      setTasks(t);setProjects(p);
+      const [t,p,e]=await Promise.all([api.get("/tasks"),api.get("/projects"),api.get("/economics")]);
+      setTasks(t);setProjects(p);setEconomics(e);
       setServerOk(true);setLastSync(new Date());
     }catch{setServerOk(false);}
   },[]);
@@ -385,6 +539,7 @@ function App(){
     {id:"tasks",label:`✦ Активные${allPending.length?` (${allPending.length})`:""}`,ac:"#f0ede8",bg:"rgba(255,255,255,.08)"},
     {id:"done",label:`✓ Выполнено${tasks.filter(t=>t.done).length?` (${tasks.filter(t=>t.done).length})`:""}`,ac:"#4caf8a",bg:"rgba(76,175,138,.14)"},
     {id:"projects",label:"📁 Проекты",ac:"#a78bfa",bg:"rgba(167,139,250,.15)"},
+    {id:"economics",label:"💼 Экономика",ac:"#fbbf24",bg:"rgba(251,191,36,.13)"},
     {id:"email",label:"✉️ Email",ac:"#c4b5fd",bg:"rgba(139,92,246,.16)"},
     {id:"telegram",label:"✈️ Telegram",ac:"#7dd3fc",bg:"rgba(43,171,238,.16)"},
   ];
@@ -503,6 +658,17 @@ function App(){
         {/* ПРОЕКТЫ */}
         {tab==="projects"&&(
           <ProjectsTab tasks={tasks} onRefresh={fetchAll}/>
+        )}
+
+        {/* ЭКОНОМИКА */}
+        {tab==="economics"&&(
+          <EconomicsTab
+            economics={economics}
+            filter={econFilter} setFilter={setEconFilter}
+            form={econForm} setForm={setEconForm}
+            adding={econAdding} setAdding={setEconAdding}
+            onRefresh={fetchAll}
+          />
         )}
 
         {/* EMAIL */}
