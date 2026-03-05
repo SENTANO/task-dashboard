@@ -337,54 +337,51 @@ function App(){
         {/* EMAIL */}
         {tab==="email"&&(
           <div style={{animation:"fadeUp .3s ease both"}}>
-            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
-              <p style={{fontSize:12,color:"rgba(255,255,255,.28)"}}>Выбрано: {selEmails.length}</p>
-              <button onClick={()=>setSelEmails(selEmails.length===DEMO_EMAILS.length?[]:DEMO_EMAILS.map(e=>e.id))} style={{fontSize:11,fontWeight:600,color:"#8b5cf6",background:"none",border:"none",cursor:"pointer"}}>
-                {selEmails.length===DEMO_EMAILS.length?"Снять все":"Выбрать все"}
-              </button>
-            </div>
-            {DEMO_EMAILS.map(e=>(
-              <SelectRow key={e.id} item={e} selected={selEmails.includes(e.id)} accent="#8b5cf6" onSelect={id=>setSelEmails(p=>p.includes(id)?p.filter(x=>x!==id):[...p,id])}>
-                <div style={{fontSize:13,fontWeight:600,color:"#f0ede8",marginBottom:2,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{e.subject}</div>
-                <div style={{fontSize:11,color:"rgba(255,255,255,.32)"}}>{e.from} · {e.date}</div>
-              </SelectRow>
-            ))}
-            <button onClick={handleEmails} disabled={emailLoading||!selEmails.length} style={{width:"100%",marginTop:12,padding:"13px",border:"none",borderRadius:11,background:emailLoading||!selEmails.length?"rgba(139,92,246,.18)":"linear-gradient(135deg,#8b5cf6,#6366f1)",color:emailLoading||!selEmails.length?"rgba(255,255,255,.28)":"#fff",fontSize:14,fontWeight:700,cursor:emailLoading||!selEmails.length?"not-allowed":"pointer",fontFamily:"'DM Sans',sans-serif",display:"flex",alignItems:"center",justifyContent:"center",gap:8}}>
-              {emailLoading?<><span style={{animation:"spin .8s linear infinite",display:"inline-block"}}>⟳</span>Анализирую…</>:`✉️ Извлечь задачи из ${selEmails.length} писем`}
-            </button>
+            {tasks.filter(t=>t.source==="email").length===0?(
+              <div style={{textAlign:"center",padding:"56px 0",color:"rgba(255,255,255,.2)"}}>
+                <div style={{fontSize:30,marginBottom:10}}>📭</div>
+                <p style={{fontSize:14}}>Задач из Email пока нет</p>
+              </div>
+            ):(
+              <>
+                <p style={{fontSize:11,fontWeight:700,letterSpacing:"0.08em",color:"rgba(255,255,255,.22)",textTransform:"uppercase",marginBottom:9}}>
+                  Активные · {tasks.filter(t=>t.source==="email"&&!t.done).length}
+                </p>
+                {tasks.filter(t=>t.source==="email"&&!t.done).map(t=><TaskCard key={t.id} task={t} onToggle={toggleDone} onDelete={deleteTask}/>)}
+                {tasks.filter(t=>t.source==="email"&&t.done).length>0&&<>
+                  <p style={{fontSize:11,fontWeight:700,letterSpacing:"0.08em",color:"rgba(255,255,255,.13)",textTransform:"uppercase",margin:"18px 0 9px"}}>
+                    Выполнено · {tasks.filter(t=>t.source==="email"&&t.done).length}
+                  </p>
+                  {tasks.filter(t=>t.source==="email"&&t.done).map(t=><TaskCard key={t.id} task={t} onToggle={toggleDone} onDelete={deleteTask}/>)}
+                </>}
+              </>
+            )}
           </div>
         )}
 
         {/* TELEGRAM */}
         {tab==="telegram"&&(
           <div style={{animation:"fadeUp .3s ease both"}}>
-            <div style={{padding:"13px 15px",marginBottom:14,background:"rgba(43,171,238,.07)",border:"1px solid rgba(43,171,238,.2)",borderRadius:12}}>
-              <p style={{fontSize:12,fontWeight:700,color:"#7dd3fc",marginBottom:5}}>✈️ Telegram-бот работает на Railway</p>
-              <p style={{fontSize:12,color:"rgba(255,255,255,.38)",lineHeight:1.6}}>Задачи появляются автоматически каждые 5 секунд. Ниже — демо для ручной проверки.</p>
-            </div>
-            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
-              <p style={{fontSize:12,color:"rgba(255,255,255,.28)"}}>Выбрано: {selTg.length}</p>
-              <button onClick={()=>setSelTg(selTg.length===DEMO_TG.length?[]:DEMO_TG.map(m=>m.id))} style={{fontSize:11,fontWeight:600,color:"#2AABEE",background:"none",border:"none",cursor:"pointer"}}>
-                {selTg.length===DEMO_TG.length?"Снять все":"Выбрать все"}
-              </button>
-            </div>
-            {DEMO_TG.map(m=>{
-              const prog=tgProgress.find(p=>p.msgId===m.id);
-              return(
-                <SelectRow key={m.id} item={m} selected={selTg.includes(m.id)} accent="#2AABEE" onSelect={id=>setSelTg(p=>p.includes(id)?p.filter(x=>x!==id):[...p,id])}>
-                  <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:2,flexWrap:"wrap"}}>
-                    <span style={{fontSize:13,fontWeight:600,color:"#f0ede8"}}>{m.from}</span>
-                    <span style={{fontSize:10,color:"rgba(255,255,255,.28)",background:"rgba(255,255,255,.05)",borderRadius:4,padding:"1px 5px"}}>{m.chat}</span>
-                    {prog&&prog.status!=="pending"&&<span style={{fontSize:10,fontWeight:700,marginLeft:"auto",color:prog.status==="task"?"#4caf8a":"rgba(255,255,255,.22)",background:prog.status==="task"?"rgba(76,175,138,.12)":"rgba(255,255,255,.04)",border:`1px solid ${prog.status==="task"?"rgba(76,175,138,.3)":"rgba(255,255,255,.08)"}`,borderRadius:4,padding:"1px 6px"}}>{prog.status==="task"?"✓ Задача":"— Не задача"}</span>}
-                    {prog&&prog.status==="pending"&&<span style={{fontSize:10,color:"#f0a500",animation:"pulse 1s infinite",marginLeft:"auto"}}>⟳</span>}
-                  </div>
-                  <div style={{fontSize:12,color:"rgba(255,255,255,.38)",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{m.text}</div>
-                </SelectRow>
-              );
-            })}
-            <button onClick={handleTelegram} disabled={tgLoading||!selTg.length} style={{width:"100%",marginTop:12,padding:"13px",border:"none",borderRadius:11,background:tgLoading||!selTg.length?"rgba(43,171,238,.15)":"linear-gradient(135deg,#2AABEE,#1a8bbf)",color:tgLoading||!selTg.length?"rgba(255,255,255,.28)":"#fff",fontSize:14,fontWeight:700,cursor:tgLoading||!selTg.length?"not-allowed":"pointer",fontFamily:"'DM Sans',sans-serif",display:"flex",alignItems:"center",justifyContent:"center",gap:8}}>
-              {tgLoading?<><span style={{animation:"spin .8s linear infinite",display:"inline-block"}}>⟳</span>Анализирую…</>:`✈️ Проверить ${selTg.length} демо-сообщений`}
-            </button>
+            {tasks.filter(t=>t.source==="telegram").length===0?(
+              <div style={{textAlign:"center",padding:"56px 0",color:"rgba(255,255,255,.2)"}}>
+                <div style={{fontSize:30,marginBottom:10}}>✈️</div>
+                <p style={{fontSize:14}}>Задач из Telegram пока нет</p>
+                <p style={{fontSize:12,marginTop:6,color:"rgba(255,255,255,.12)"}}>Напишите боту — задачи появятся здесь</p>
+              </div>
+            ):(
+              <>
+                <p style={{fontSize:11,fontWeight:700,letterSpacing:"0.08em",color:"rgba(255,255,255,.22)",textTransform:"uppercase",marginBottom:9}}>
+                  Активные · {tasks.filter(t=>t.source==="telegram"&&!t.done).length}
+                </p>
+                {tasks.filter(t=>t.source==="telegram"&&!t.done).map(t=><TaskCard key={t.id} task={t} onToggle={toggleDone} onDelete={deleteTask}/>)}
+                {tasks.filter(t=>t.source==="telegram"&&t.done).length>0&&<>
+                  <p style={{fontSize:11,fontWeight:700,letterSpacing:"0.08em",color:"rgba(255,255,255,.13)",textTransform:"uppercase",margin:"18px 0 9px"}}>
+                    Выполнено · {tasks.filter(t=>t.source==="telegram"&&t.done).length}
+                  </p>
+                  {tasks.filter(t=>t.source==="telegram"&&t.done).map(t=><TaskCard key={t.id} task={t} onToggle={toggleDone} onDelete={deleteTask}/>)}
+                </>}
+              </>
+            )}
           </div>
         )}
 
